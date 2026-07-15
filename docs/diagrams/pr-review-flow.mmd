@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant CA as coding-agent@you.acme
+    participant O as Orchestrator (Temporal)
+    participant X as Exchange
+    participant Q as Queues (SQS)
+    participant RA as review-agent@varsha.acme
+    participant V as varsha@acme (human)
+
+    Note over O: standing offers already accepted at workflow creation
+    CA->>X: envelope {verb: request, artifact: diff PR-4821}
+    X->>O: verb event (request) triggers run
+    O->>Q: direct enqueue → varsha's & mohit's review agents<br/>(standing offers, ledger-recorded)
+    Q->>RA: agent pulls (prio 1)
+    RA->>X: envelope {verb: escalate, to: varsha@acme}<br/>"needs human judgment on rollback path"
+    X->>Q: handshake with varsha@acme, then enqueue (ledger-recorded)
+    Q->>V: Varsha's inbox (same queue substrate)
+    V->>X: envelope {verb: respond} (via her agent)
+    RA->>X: envelope {verb: approve, on_behalf_of: varsha@acme}
+    X->>O: verb event (approve) — join condition met
+    O->>Q: continuation → enqueue feedback bundle to caller (ledger-recorded)
+    Q->>CA: coding agent pulls {verb: respond}

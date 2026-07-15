@@ -41,44 +41,9 @@ Switchboard is five logical components on one substrate, deployed in v0 as two s
 
 ### 3.1 Topology
 
-```mermaid
-flowchart LR
-    subgraph Edges["Endpoints (intelligence lives here)"]
-        H["Human endpoint<br/>varsha@acme"]
-        A1["Agent endpoint<br/>review-agent@varsha.acme"]
-        A2["Agent endpoint<br/>coding-agent@you.acme"]
-    end
+![System topology: endpoints at the edges, the hot-path service (Exchange, Queues) and control-plane service (Registry, Orchestrator, Ledger) inside the switchboard, and the Console as a client](diagrams/topology.png)
 
-    subgraph SB["Switchboard (neutral common carrier)"]
-        subgraph HOT["Hot-path service"]
-            X["Exchange<br/>offer/accept handshake,<br/>ad-hoc & first-contact delivery"]
-            Q["Queues<br/>durable, per-endpoint<br/>(AWS SQS)"]
-        end
-        subgraph CP["Control-plane service"]
-            R["Registry<br/>endpoints & capability manifests"]
-            O["Orchestrator<br/>declarative workflows<br/>(Temporal)"]
-            L["Ledger<br/>append-only,<br/>org-set retention"]
-        end
-    end
-
-    C["Console<br/>client of the public APIs"]
-
-    A2 -- "dial (ad-hoc) /<br/>emit envelope" --> X
-    X -- "resolve address,<br/>read manifest" --> R
-    X -- "enqueue accepted deliveries<br/>(ledger-recorded)" --> Q
-    O -- "direct enqueue via<br/>standing offers<br/>(ledger-recorded)" --> Q
-    Q -- "pull (agents) /<br/>inbox (humans)" --> A1
-    Q --> H
-    A1 -- "verb emissions<br/>(respond/escalate/…)" --> X
-    X -- "verb events" --> O
-    X -- "handshake records" --> L
-    Q -- "enqueue & delivery records" --> L
-    O -- "run & join records" --> L
-    C --- R
-    C --- Q
-    C --- O
-    C --- L
-```
+<sub>Diagram source: [diagrams/topology.mmd](diagrams/topology.mmd)</sub>
 
 There are exactly **two delivery paths** into an endpoint's queue: the Exchange (ad-hoc and first-contact calls, after a handshake) and the Orchestrator (workflow calls covered by standing offers accepted at workflow creation — no per-call handshake, so no per-call Exchange hop). Both paths converge on the same queue-write API, which is ledger-recorded — that chokepoint, not "everything flows through the Exchange", is what keeps the record complete. Registry, Queues, and Ledger never call endpoints. The Console is a client of the same public APIs endpoints use, not a sixth component.
 
@@ -144,30 +109,21 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 
 Every payload that moves through the switchboard is wrapped in an envelope. This is the one schema all five components share, and it is what keeps Switchboard workflow-agnostic.
 
-The product brief settles four fields: **artifact reference, thread ID, provenance, and verb**. The remaining seven (`envelope_id`, `from`/`to`, `session_id`, `artifact.digest`, `provenance.in_reply_to`, `priority`, `created_at`) were ratified in the 2026-07-12 review as *the proposal* — they stay in this doc and get their final field-level freeze in the v0 spec.
+The product brief settles four fields: **artifact reference, thread ID, provenance, and verb**. Seven supporting fields were ratified in the 2026-07-12 review as *the proposal*. This doc pins only the field list and what each is for; the concrete wire schema (JSON encoding, field types, size limits, error envelopes) is low-level design and lands with the envelope story in the v0 spec.
 
-```jsonc
-{
-  "envelope_id": "env_01J...",          // unique, switchboard-assigned
-  "thread_id": "thr_01J...",            // conversation identity; stable across revise loops
-  "session_id": "ses_01J...",           // the handshaken session this travels on
-  "verb": "request",                    // exactly one of the universal set (below)
-  "from": "coding-agent@you.acme",
-  "to": "review-agent@varsha.acme",
-  "artifact": {
-    "type": "diff",                     // matched against callee manifest at handshake
-    "ref": "artifact://acme/pr-4821",   // reference — bodies live outside the switchboard
-    "digest": "sha256:…"                // integrity check for the referenced content
-  },
-  "provenance": {
-    "workflow_run": "wf:high-impact-pr-review#r-2210",  // or "ad-hoc"
-    "on_behalf_of": "varsha@acme",      // the human/team an agent endpoint acts for
-    "in_reply_to": "env_01H..."         // prior envelope on the thread, if any
-  },
-  "priority": 1,
-  "created_at": "2026-07-12T14:02:12Z"
-}
-```
+| Field | Purpose | Origin |
+|---|---|---|
+| Verb | Exactly one of the universal set (§4.1) | Brief |
+| Thread ID | Conversation identity; stable across revise loops | Brief |
+| Artifact reference + type | Pointer to the work item; type is matched against the callee's manifest at handshake. Bodies live outside the switchboard | Brief |
+| Provenance (workflow run, on-behalf-of) | Which workflow run (or `ad-hoc`) produced it; the human/team an agent acts for | Brief |
+| Envelope ID | Unique, switchboard-assigned identifier per message; dedupe and ledger reference | Proposed |
+| From / To | Sender and recipient endpoint addresses | Proposed |
+| Session ID | The handshaken session the envelope travels on (see invariants below) | Proposed |
+| Artifact digest | Integrity check — recipients verify the fetched content matches what was offered | Proposed |
+| In-reply-to | The prior envelope on the thread this one answers | Proposed |
+| Priority | Queue ordering; surfaced in the console and adjustable under saturation | Proposed |
+| Created-at | Timestamp; powers queue age and latency metrics | Proposed |
 
 ### 4.1 The verb set
 
@@ -193,32 +149,9 @@ One verb per envelope, from a small universal set. Workflow joins key off verb e
 
 ### 5.1 The handshake (session establishment)
 
-```mermaid
-sequenceDiagram
-    participant Caller as caller (endpoint or orchestrator)
-    participant X as Exchange
-    participant R as Registry
-    participant Callee as callee endpoint
-    participant Q as Callee's queue
-    participant L as Ledger
+![Handshake sequence: caller dials, Exchange resolves the callee's manifest via the Registry, sends the offer, and the callee's accept, decline, or defer is recorded to the Ledger](diagrams/handshake.png)
 
-    Caller->>X: dial(to, verb, artifact.type)
-    X->>R: resolve(to) + manifest
-    R-->>X: manifest (verbs, artifact types, status)
-    X->>Callee: OFFER {caller, verb, artifact.type}
-    alt accept
-        Callee-->>X: accept
-        X->>Q: enqueue envelope
-        X->>L: record offer=accepted, session open
-    else decline (or timeout = implicit decline)
-        Callee-->>X: decline / (silence)
-        X->>L: record offer=declined
-        X-->>Caller: declined
-    else defer
-        Callee-->>X: defer (retry-after)
-        X->>L: record offer=deferred, retry scheduled
-    end
-```
+<sub>Diagram source: [diagrams/handshake.mmd](diagrams/handshake.mmd)</sub>
 
 The offer carries **metadata only**. The artifact reference is delivered after acceptance, into the queue. Endpoint-side acceptance logic (checking load, maintainer rules, caller allowlists) is invisible to the switchboard by design.
 
@@ -226,29 +159,9 @@ The offer carries **metadata only**. The artifact reference is delivered after a
 
 `wf:high-impact-pr-review` — trigger: coding agent emits a PR diff; fan-out to two review agents; join on both emitting a terminal verb; continuation returns the bundle to the coding agent.
 
-```mermaid
-sequenceDiagram
-    participant CA as coding-agent@you.acme
-    participant O as Orchestrator (Temporal)
-    participant X as Exchange
-    participant Q as Queues (SQS)
-    participant RA as review-agent@varsha.acme
-    participant V as varsha@acme (human)
+![PR-review workflow sequence: the coding agent's request triggers the run, the Orchestrator direct-enqueues to both review agents via standing offers, one agent escalates to its human through the Exchange, and the approve verb completes the join](diagrams/pr-review-flow.png)
 
-    Note over O: standing offers already accepted at workflow creation
-    CA->>X: envelope {verb: request, artifact: diff PR-4821}
-    X->>O: verb event (request) triggers run
-    O->>Q: direct enqueue → varsha's & mohit's review agents<br/>(standing offers, ledger-recorded)
-    Q->>RA: agent pulls (prio 1)
-    RA->>X: envelope {verb: escalate, to: varsha@acme}<br/>"needs human judgment on rollback path"
-    X->>Q: handshake with varsha@acme, then enqueue (ledger-recorded)
-    Q->>V: Varsha's inbox (same queue substrate)
-    V->>X: envelope {verb: respond} (via her agent)
-    RA->>X: envelope {verb: approve, on_behalf_of: varsha@acme}
-    X->>O: verb event (approve) — join condition met
-    O->>Q: continuation → enqueue feedback bundle to caller (ledger-recorded)
-    Q->>CA: coding agent pulls {verb: respond}
-```
+<sub>Diagram source: [diagrams/pr-review-flow.mmd](diagrams/pr-review-flow.mmd)</sub>
 
 Points to notice:
 

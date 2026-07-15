@@ -1,0 +1,36 @@
+flowchart LR
+    subgraph Edges["Endpoints (intelligence lives here)"]
+        H["Human endpoint<br/>varsha@acme"]
+        A1["Agent endpoint<br/>review-agent@varsha.acme"]
+        A2["Agent endpoint<br/>coding-agent@you.acme"]
+    end
+
+    subgraph SB["Switchboard (neutral common carrier)"]
+        subgraph HOT["Hot-path service"]
+            X["Exchange<br/>offer/accept handshake,<br/>ad-hoc & first-contact delivery"]
+            Q["Queues<br/>durable, per-endpoint<br/>(AWS SQS)"]
+        end
+        subgraph CP["Control-plane service"]
+            R["Registry<br/>endpoints & capability manifests"]
+            O["Orchestrator<br/>declarative workflows<br/>(Temporal)"]
+            L["Ledger<br/>append-only,<br/>org-set retention"]
+        end
+    end
+
+    C["Console<br/>client of the public APIs"]
+
+    A2 -- "dial (ad-hoc) /<br/>emit envelope" --> X
+    X -- "resolve address,<br/>read manifest" --> R
+    X -- "enqueue accepted deliveries<br/>(ledger-recorded)" --> Q
+    O -- "direct enqueue via<br/>standing offers<br/>(ledger-recorded)" --> Q
+    Q -- "pull (agents) /<br/>inbox (humans)" --> A1
+    Q --> H
+    A1 -- "verb emissions<br/>(respond/escalate/…)" --> X
+    X -- "verb events" --> O
+    X -- "handshake records" --> L
+    Q -- "enqueue & delivery records" --> L
+    O -- "run & join records" --> L
+    C --- R
+    C --- Q
+    C --- O
+    C --- L

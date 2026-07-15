@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant Caller as caller (endpoint or orchestrator)
+    participant X as Exchange
+    participant R as Registry
+    participant Callee as callee endpoint
+    participant Q as Callee's queue
+    participant L as Ledger
+
+    Caller->>X: dial(to, verb, artifact.type)
+    X->>R: resolve(to) + manifest
+    R-->>X: manifest (verbs, artifact types, status)
+    X->>Callee: OFFER {caller, verb, artifact.type}
+    alt accept
+        Callee-->>X: accept
+        X->>Q: enqueue envelope
+        X->>L: record offer=accepted, session open
+    else decline (or timeout = implicit decline)
+        Callee-->>X: decline / (silence)
+        X->>L: record offer=declined
+        X-->>Caller: declined
+    else defer
+        Callee-->>X: defer (retry-after)
+        X->>L: record offer=deferred, retry scheduled
+    end
