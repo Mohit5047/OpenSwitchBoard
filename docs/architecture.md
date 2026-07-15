@@ -37,11 +37,11 @@ These were settled through iteration and constrain every component design below.
 
 ## 3. Component architecture — five components, one substrate
 
-Switchboard is five logical components on one substrate, deployed in v0 as two services — a **hot-path service** (Exchange + Queues, the high-traffic delivery path) and a **control-plane service** (Registry, Orchestrator, Ledger) — see §9. Component boundaries are logical contracts, not necessarily process boundaries.
+Switchboard is five logical components on one substrate, deployed in v0 as **four services**: the **Exchange service**, the **Queue service**, and the **Registry service** each stand alone, and a single **control-plane service** hosts the Orchestrator and Ledger behind separate API paths (`/workflows`, `/ledger`) — see §9. Component boundaries are logical contracts, not necessarily process boundaries.
 
 ### 3.1 Topology
 
-![System topology: endpoints at the edges, the hot-path service (Exchange, Queues) and control-plane service (Registry, Orchestrator, Ledger) inside the switchboard, and the Console as a client](diagrams/topology.png)
+![System topology: endpoints at the edges; inside the switchboard the Exchange, Queue, and Registry services stand alone, and the control-plane service hosts the Orchestrator and Ledger API paths; the Console is a client](diagrams/topology.png)
 
 <sub>Diagram source: [diagrams/topology.mmd](diagrams/topology.mmd)</sub>
 
@@ -215,7 +215,7 @@ Locked above: the logical boundaries, the envelope contract, the handshake, and 
 
 | Choice | Default | Rationale |
 |---|---|---|
-| Deployment shape | **Two services**: hot path (Exchange + Queues) and control plane (Registry + Orchestrator + Ledger) | Isolates the high-traffic delivery path from the stateful control plane; boundaries within each service stay module contracts, splittable further along the same seams. |
+| Deployment shape | **Four services**: Exchange, Queues, and Registry each stand alone; one control-plane service hosts Orchestrator (`/workflows`) and Ledger (`/ledger`) as separate API paths | Each hot-path concern (handshaking, delivery) and the read-heavy Registry scale independently; the lower-traffic Orchestrator and Ledger share one deployable behind distinct paths. |
 | System of record | **PostgreSQL** for registry, ledger (append-only tables with retention policy), and workflow metadata | One durable substrate for state; the ledger-write-before-enqueue ordering (§3.4) keeps "complete by construction" honest. |
 | Queue mechanics | **AWS SQS**, one queue per endpoint | Managed, pay-per-use (effectively free at v0 volume), no broker to operate. Couples the reference deployment to AWS — accepted for v0; abstraction seam for self-hosters is an open question (§10). |
 | Endpoint protocol | HTTPS + JSON. Offers pushed via signed webhook (with long-poll fallback); agents pull queues; humans via console/inbox | Lowest integration bar for agent developers; handshake timeout = implicit decline maps cleanly onto webhook semantics. |
@@ -256,5 +256,5 @@ Ratified in the stakeholder walkthrough on **2026-07-12** (reviewer: Mohit Gupta
 | 3 | Delivery topology | **Changed** — the Orchestrator enqueues directly for standing-offer workflow calls; ledger completeness enforced at the queue-write chokepoint (§3.4) instead of "Exchange is sole path". |
 | 4 | Artifact custody | **Confirmed** — references + digests only; bodies never stored in the switchboard. |
 | 5 | Security | **Confirmed** (a) per-endpoint credentials, switchboard as trust broker; (b) single-org v0. **Changed** (c) ledger append-only *plus* org-configurable retention window, replacing "never deleted, ever". |
-| 6 | Reference stack | **Changed** — two services (hot path / control plane); AWS SQS for queues; Temporal for workflows. Postgres system of record and HTTPS/JSON + signed-webhook protocol unchanged. |
+| 6 | Reference stack | **Changed** — AWS SQS for queues; Temporal for workflows. Postgres system of record and HTTPS/JSON + signed-webhook protocol unchanged. Deployment shape initially two services (hot path / control plane); **amended 2026-07-15 in PR #1 review** to four services — Exchange, Queues, and Registry standalone, control plane hosting Orchestrator + Ledger as API paths. |
 | 7 | Console | **Confirmed** — a client of the public APIs, not a sixth component; no privileged back door. |

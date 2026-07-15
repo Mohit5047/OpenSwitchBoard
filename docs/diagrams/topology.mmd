@@ -6,14 +6,18 @@ flowchart LR
     end
 
     subgraph SB["Switchboard (neutral common carrier)"]
-        subgraph HOT["Hot-path service"]
+        subgraph XS["Exchange service"]
             X["Exchange<br/>offer/accept handshake,<br/>ad-hoc & first-contact delivery"]
+        end
+        subgraph QS["Queue service"]
             Q["Queues<br/>durable, per-endpoint<br/>(AWS SQS)"]
         end
-        subgraph CP["Control-plane service"]
+        subgraph RS["Registry service"]
             R["Registry<br/>endpoints & capability manifests"]
-            O["Orchestrator<br/>declarative workflows<br/>(Temporal)"]
-            L["Ledger<br/>append-only,<br/>org-set retention"]
+        end
+        subgraph CP["Control-plane service"]
+            O["Orchestrator — /workflows<br/>(Temporal)"]
+            L["Ledger — /ledger<br/>append-only, org-set retention"]
         end
     end
 
