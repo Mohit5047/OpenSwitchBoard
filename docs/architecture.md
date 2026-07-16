@@ -76,7 +76,8 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 **Owns:** durable, per-endpoint delivery buffers. **Switchboard-owned** — endpoints do not host their own queues. Backed by **AWS SQS**, one queue per endpoint (see §10 for the abstraction seam).
 
 - The queue-write API is the **single chokepoint** shared by both delivery paths (Exchange and Orchestrator). Every enqueue writes its ledger entry in Postgres *first*, then sends to SQS with an idempotency key; delivery is at-least-once and consumers deduplicate on `envelope_id`. This ordering is what makes the ledger complete by construction even with two writers.
-- The ledger row doubles as a **transactional outbox** entry carrying a delivered-to-queue marker. If the SQS send fails — or the process dies between the Postgres commit and the send — a sweeper re-drives unmarked rows until SQS acknowledges; the sender only sees enqueue success after that acknowledgment. Duplicate sends from re-drives are harmless because consumers dedupe on `envelope_id`.
+- The ledger row doubles as a **transactional outbox** entry carrying a delivered-to-queue marker. If the SQS send fails — or the process dies between the Postgres commit and the send — the **sweeper** re-drives unmarked rows until SQS acknowledges; the sender only sees enqueue success after that acknowledgment. Duplicate sends from re-drives are harmless because consumers dedupe on `envelope_id`.
+- The sweeper is a **background job owned by the Queue service**: it continuously scans the outbox for committed rows without the delivered marker (older than a short grace window, e.g. 30 s) and retries their SQS sends with backoff. Its lag is observable (§8) — a growing unmarked backlog is an alert condition.
 - **Agents pull** from their queue; cloud agents autoscale to a budget cap to drain them.
 - **Humans see the same queue as a Slack-like inbox** — one queue abstraction, two presentations.
 - Entries carry priority, age, originating workflow (or `ad-hoc`), caller, verb, and artifact reference.
@@ -196,7 +197,7 @@ When an agent endpoint's queue saturates (e.g. `review-agent@mohit.acme` at repl
 | Concern | Position |
 |---|---|
 | Trust boundary | Endpoints are untrusted edges; the switchboard substrate is the trusted core. Everything an endpoint asserts (manifest, acceptance, envelopes) is recorded as *its* assertion, attributable via its credential. |
-| Artifact custody | The switchboard carries **references + digests**, not bodies. Artifact stores enforce their own access control; a leaked ledger never leaks artifact content. Digest lets recipients verify what they fetched is what was offered. |
+| Artifact custody | The switchboard carries **references + digests**, not bodies. Bodies live in the org's existing systems of record (GitHub for diffs, doc stores for documents), which the single-org pilot's endpoints already share access to; for freshly generated artifacts the reference deployment designates **one org-shared object-store bucket** — a deployment convention, not a switchboard component — so agents don't each bring their own storage. Artifact stores enforce their own access control; a leaked ledger never leaks artifact content. Digest lets recipients verify what they fetched is what was offered. |
 | Tenancy | v0 is single-org. All addresses live in one org namespace; cross-org federation is deferred (§11) and must not be accidentally half-built. |
 | Auditability | Append-only ledger, complete by construction (no side channels). Ledger writes are part of the delivery path, not best-effort telemetry. Entries are never edited; an org-configurable retention window may expire old entries per policy. |
 | Least privilege in the console | Directory is org-visible; queue intervention is owner-only; ledger queries are role-gated (governance roles can query across endpoints). |
@@ -223,6 +224,8 @@ Anchored to the ratified v0 scale target: **pilot — one team** (~50 endpoints,
 | Concurrent open sessions | 500 total across the switchboard (not per endpoint) |
 | Workflow runs in flight | 100 total across all workflow definitions |
 | Regions / orgs | 1 / 1 |
+
+These are sizing targets, not quotas. **Fairness guardrail (proposed):** no single caller may hold more than 20% of global session capacity, and no single workflow definition more than 20% of in-flight run slots — the switchboard `defer`s the excess with standard retry semantics, so a runaway caller degrades only itself. Below those guardrails, fairness is structural: queues are per-endpoint (a flooded endpoint slows only its own queue) and each queue orders by priority then age.
 
 ### 9.2 Latency
 
