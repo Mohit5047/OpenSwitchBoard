@@ -105,7 +105,7 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 - **Queryable by decision, endpoint, or workflow** — "show every `approve` on payments-core this month", "everything `review-agent@mohit.acme` deferred".
 - The ledger is the audit/governance surface and, per the business framing, part of the moat: the stateful, trust-heavy layer peer-to-peer agent protocols can't replicate.
 
-**Does not:** store artifact bodies (it stores references + digests), and is never consulted for routing decisions.
+**Does not:** store artifact bodies (references + digests only — envelope message bodies, being part of the conversation record, *are* stored), and is never consulted for routing decisions.
 
 ## 4. The envelope — the shared contract
 
@@ -126,6 +126,7 @@ The product brief settles four fields: **artifact reference, thread ID, provenan
 | In-reply-to | The prior envelope on the thread this one answers | Proposed |
 | Priority | Queue ordering; surfaced in the console and adjustable under saturation | Proposed |
 | Created-at | Timestamp; powers queue age and latency metrics | Proposed |
+| Message body (optional) | Conversational text accompanying the verb (≤ 12 KB) — remarks, escalation reasons, rejection rationale, chat turns. The conversation is part of the record; the work product stays by-reference in the artifact | Ratified 2026-07-16 (PR #2) |
 
 ### 4.1 The verb set
 
@@ -199,7 +200,7 @@ When an agent endpoint's queue saturates (e.g. `review-agent@mohit.acme` at repl
 | Trust boundary | Endpoints are untrusted edges; the switchboard substrate is the trusted core. Everything an endpoint asserts (manifest, acceptance, envelopes) is recorded as *its* assertion, attributable via its credential. |
 | Artifact custody | The switchboard carries **references + digests**, not bodies. Bodies live in the org's existing systems of record (GitHub for diffs, doc stores for documents), which the single-org pilot's endpoints already share access to; for freshly generated artifacts the reference deployment designates **one org-shared object-store bucket** — a deployment convention, not a switchboard component — so agents don't each bring their own storage. Artifact stores enforce their own access control; a leaked ledger never leaks artifact content. Digest lets recipients verify what they fetched is what was offered. |
 | Tenancy | v0 is single-org. All addresses live in one org namespace; cross-org federation is deferred (§11) and must not be accidentally half-built. |
-| Auditability | Append-only ledger, complete by construction (no side channels). Ledger writes are part of the delivery path, not best-effort telemetry. Entries are never edited; an org-configurable retention window may expire old entries per policy. |
+| Auditability | Append-only ledger, complete by construction (no side channels). Ledger writes are part of the delivery path, not best-effort telemetry. Entries are never edited; an org-configurable retention window may expire old entries per policy. The ledger contains **message bodies** (the conversation) but never **artifact bodies** (the work); role-gated queries and the retention window bound that exposure. |
 | Least privilege in the console | Directory is org-visible; queue intervention is owner-only; ledger queries are role-gated (governance roles can query across endpoints). |
 | Abuse pressure valve | Unknown/noisy callers are handled by endpoint-side decline logic today; a switchboard-side "quarantine pen" tier is an open question (§11), explicitly not in v0. |
 
@@ -313,3 +314,4 @@ Ratified in the stakeholder walkthrough on **2026-07-12**, with amendments from 
 | 8 | v0 scale anchor | **Ratified 2026-07-15** — NFRs target pilot scale: one team, ~50 endpoints, low thousands of messages/day, single region/org. |
 | 9 | NFR parameters | **Ratified 2026-07-15** — latency budgets relaxed to 100 ms / 400 ms / 1 s / 4 s p95; handshake timeout 60 s; durability RPO ≤ 5 min, RTO ≤ 4 h, auto-re-drive past SQS's 14-day cap; workflow wait caps are **per-state, author-declared, defaulting to 24 h** (initially a hard 24 h cap; softened same day to the configurable default so days-long workflows declare their needs up front — reconciles with the brief's "can wait days"); ledger retention 1 year default; availability 99.5% monthly, no cross-region DR; **cost ceiling $50/month** (four services co-locate on shared compute in the pilot). Amended 2026-07-16 in PR #2 review: fairness via **per-endpoint session limits** (default 25) and **per-workflow-definition run limits** (default 10), replacing the briefly proposed 20%-of-global guardrail. |
 | 10 | Envelope schema specifics | **Ratified 2026-07-15** — IDs are switchboard-minted prefixed **UUIDv4s** (ordering via `created_at`); priority **0–9, lower = urgent, default 4, 0 reserved for human take-over**; **16 KB** envelope cap; **strict fields** (unknown fields rejected, no extension bag); **set-once immutability** (corrections are new envelopes); **sha256-only** digests. See [envelope-schema.md](envelope-schema.md). |
+| 11 | Message body vs artifact body | **Ratified 2026-07-16 (PR #2 review)** — envelopes gain an optional inline **`body` ≤ 12 KB** for conversational text (including chat-style exchanges), delivered via queues and stored in the ledger as part of the record. Artifact bodies remain by-reference only. Rationale: the conversation is exactly what the ledger must capture — forcing prose into artifact stores (or Slack) would recreate side channels. |

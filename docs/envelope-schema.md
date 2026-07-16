@@ -14,6 +14,7 @@ JSON, schema-versioned. Every payload that moves through the switchboard is exac
   "thread_id": "thr_a2e8c4d0-1b6f-4e93-b7d5-08c1f2a64e39",     // conversation identity; stable across revise loops
   "session_id": "ses_7c31e9f5-2a84-4d06-9e1b-53b8a0c7d214",    // the handshaken session this travels on
   "verb": "request",                                  // exactly one of the closed set
+  "body": "Focus on the rollback path — retry semantics in payments-core changed.",  // optional message text (≤ 12 KB)
   "from": "coding-agent@you.acme",
   "to": "review-agent@varsha.acme",
   "artifact": {
@@ -47,6 +48,7 @@ JSON, schema-versioned. Every payload that moves through the switchboard is exac
     "thread_id": { "type": "string", "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "session_id": { "type": "string", "pattern": "^ses_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "verb": { "enum": ["request", "respond", "revise", "approve", "reject", "escalate", "inform"] },
+    "body": { "type": "string", "maxLength": 12288 },
     "from": { "$ref": "#/$defs/address" },
     "to": { "$ref": "#/$defs/address" },
     "artifact": {
@@ -86,6 +88,7 @@ JSON, schema-versioned. Every payload that moves through the switchboard is exac
 
 - **Closed verb set.** The seven-verb enum is closed in v0 (decision log #2); workflow joins key off verb emissions.
 - **IDs** are switchboard-assigned UUIDv4s with type prefixes (`env_`, `thr_`, `ses_`). Endpoints never mint them. Chronological ordering comes from `created_at`, not the ID.
+- **`body`** (optional) — conversational text accompanying the verb, ≤ 12 KB: review remarks, escalation reasons ("needs human judgment on the rollback path"), rejection rationale, or plain chat turns. This is the **message about the work**; the work itself always stays by-reference in `artifact`. Bodies are delivered through the queue and stored in the ledger as part of the interaction record — conversation is switchboard custody, work products are not (ratified 2026-07-16, PR #2 review). Chat-style exchanges are simply sequences of small-bodied envelopes on one `thread_id` — the per-message cap never binds there; message *volume* is governed by the scale targets (architecture §9.1). Anything that doesn't fit in 12 KB is a work product and belongs in an artifact.
 - **`artifact`** — the work item this envelope is about. `type` (e.g. `diff`, `design-doc`) is matched against the callee's capability manifest at handshake, so an endpoint is never offered work it can't handle. `ref` is a URI pointing to where the body actually lives — the org's existing systems of record (GitHub for diffs, doc stores for documents), or the org-shared artifact bucket the reference deployment designates for freshly generated content; the switchboard never stores or fetches it, and access control stays with the store. `digest` is the sha256 fingerprint of that content: the recipient hashes what it fetches from `ref` and compares, proving nobody swapped the artifact after the offer.
 - **`provenance`** — where the envelope came from. `workflow_run` names the orchestrator run that produced it (`wf:<workflow>#<run>`), or the literal `ad-hoc` for direct dials. `on_behalf_of` is the human or team the sending agent acts for — this is what makes "who did this, for whom" answerable from the ledger alone. `in_reply_to` points at the earlier envelope on the thread this one answers, giving exact conversation ordering.
 - **Timestamps are UTC.** `created_at` is RFC 3339 with a mandatory `Z` suffix — the schema rejects local-time offsets. The switchboard assigns it at acceptance; endpoints never set it.
