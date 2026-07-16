@@ -1,6 +1,6 @@
 # Switchboard — Overall System Architecture (v0)
 
-**Status:** Draft v2 — decisions ratified in stakeholder walkthrough 2026-07-12 (see §12 Decision log); pending remaining sign-off · feeds the v0 specification
+**Status:** Draft v3 — decisions ratified in stakeholder walkthrough 2026-07-12 and PR #1 review (see §13 Decision log); pending remaining sign-off · feeds the v0 specification
 **Milestone:** M0 — Discovery, Requirements & System Design
 **Asana:** [Overall system architecture](https://app.asana.com/1/1216510645821595/task/1216512588498291)
 **Audience:** stakeholders reviewing the M0 design gate; authors of the per-component design stories (Registry, Exchange, Queues, Orchestrator, Ledger, Console)
@@ -12,7 +12,7 @@
 This document defines how Switchboard's five components fit together before any build begins. It locks the component boundaries, the data flow between them, the envelope contract, and the cross-cutting concerns (identity/endpoint model, security posture, observability). Every other M0 design story plugs into this backbone, and the frozen v0 spec consolidates it.
 
 **In scope:** logical architecture, contracts and invariants, end-to-end flows, a proposed reference stack (default-but-revisable).
-**Out of scope:** per-component API surface detail (owned by the sibling M0 stories), visual/console design, cross-org federation (explicitly deferred — see §10).
+**Out of scope:** per-component API surface detail (owned by the sibling M0 stories), visual/console design, cross-org federation (explicitly deferred — see §11).
 
 ## 2. System overview
 
@@ -37,7 +37,7 @@ These were settled through iteration and constrain every component design below.
 
 ## 3. Component architecture — five components, one substrate
 
-Switchboard is five logical components on one substrate, deployed in v0 as **four services**: the **Exchange service**, the **Queue service**, and the **Registry service** each stand alone, and a single **control-plane service** hosts the Orchestrator and Ledger behind separate API paths (`/workflows`, `/ledger`) — see §9. Component boundaries are logical contracts, not necessarily process boundaries.
+Switchboard is five logical components on one substrate, deployed in v0 as **four services**: the **Exchange service**, the **Queue service**, and the **Registry service** each stand alone, and a single **control-plane service** hosts the Orchestrator and Ledger behind separate API paths (`/workflows`, `/ledger`) — see §10. Component boundaries are logical contracts, not necessarily process boundaries.
 
 ### 3.1 Topology
 
@@ -73,9 +73,11 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 
 ### 3.4 Queues
 
-**Owns:** durable, per-endpoint delivery buffers. **Switchboard-owned** — endpoints do not host their own queues. Backed by **AWS SQS**, one queue per endpoint (see §9 for the abstraction seam).
+**Owns:** durable, per-endpoint delivery buffers. **Switchboard-owned** — endpoints do not host their own queues. Backed by **AWS SQS**, one queue per endpoint (see §10 for the abstraction seam).
 
 - The queue-write API is the **single chokepoint** shared by both delivery paths (Exchange and Orchestrator). Every enqueue writes its ledger entry in Postgres *first*, then sends to SQS with an idempotency key; delivery is at-least-once and consumers deduplicate on `envelope_id`. This ordering is what makes the ledger complete by construction even with two writers.
+- The ledger row doubles as a **transactional outbox** entry carrying a delivered-to-queue marker. If the SQS send fails — or the process dies between the Postgres commit and the send — the **sweeper** re-drives unmarked rows until SQS acknowledges; the sender only sees enqueue success after that acknowledgment. Duplicate sends from re-drives are harmless because consumers dedupe on `envelope_id`.
+- The sweeper is a **background job owned by the Queue service**: it continuously scans the outbox for committed rows without the delivered marker (older than a short grace window, e.g. 30 s) and retries their SQS sends with backoff. Its lag is observable (§8) — a growing unmarked backlog is an alert condition.
 - **Agents pull** from their queue; cloud agents autoscale to a budget cap to drain them.
 - **Humans see the same queue as a Slack-like inbox** — one queue abstraction, two presentations.
 - Entries carry priority, age, originating workflow (or `ad-hoc`), caller, verb, and artifact reference.
@@ -85,10 +87,10 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 
 ### 3.5 Orchestrator
 
-**Owns:** declarative, Step-Functions-style workflows over endpoints. Runs on **Temporal** (self-hosted, backed by the same Postgres — see §9).
+**Owns:** declarative, Step-Functions-style workflows over endpoints. Runs on **Temporal** (self-hosted, backed by the same Postgres — see §10).
 
 - Shape: **trigger → fan-out → join on verb emissions → continuation.** A workflow never encodes what work means — joins key off verbs (e.g. "wait until both callees emit `respond` or any emits `reject`").
-- **States are conversations and can wait days.** Temporal's durable execution covers restarts and makes idle waits cheap.
+- **States are conversations.** Waits are durable across deploys and restarts and cost nothing while idle (Temporal). Each state carries a **wait cap declared by the workflow author (default 24 h, §9.4)**; a state exceeding its cap times out, fails the run fast, and is ledger-recorded.
 - **Standing offers:** when a workflow is created, the Orchestrator performs the handshake with every referenced endpoint once, up front. Runs then execute without per-call friction and **fail fast on declines** at creation time rather than mid-run.
 - **Direct enqueue:** because standing offers were already accepted, workflow calls skip the per-call Exchange hop — the Orchestrator writes straight to the callee's queue via the ledger-recorded queue-write API (§3.4).
 - **Ad-hoc mode:** any endpoint can dial any other directly ("New call"), producing a single-session micro-workflow that goes through the full Exchange handshake, queueing, and ledger treatment.
@@ -103,13 +105,13 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 - **Queryable by decision, endpoint, or workflow** — "show every `approve` on payments-core this month", "everything `review-agent@mohit.acme` deferred".
 - The ledger is the audit/governance surface and, per the business framing, part of the moat: the stateful, trust-heavy layer peer-to-peer agent protocols can't replicate.
 
-**Does not:** store artifact bodies (it stores references + digests), and is never consulted for routing decisions.
+**Does not:** store artifact bodies (references + digests only — envelope message bodies, being part of the conversation record, *are* stored), and is never consulted for routing decisions.
 
 ## 4. The envelope — the shared contract
 
 Every payload that moves through the switchboard is wrapped in an envelope. This is the one schema all five components share, and it is what keeps Switchboard workflow-agnostic.
 
-The product brief settles four fields: **artifact reference, thread ID, provenance, and verb**. Seven supporting fields were ratified in the 2026-07-12 review as *the proposal*. This doc pins only the field list and what each is for; the concrete wire schema (JSON encoding, field types, size limits, error envelopes) is low-level design and lands with the envelope story in the v0 spec.
+The product brief settles four fields: **artifact reference, thread ID, provenance, and verb**. Seven supporting fields were ratified in the 2026-07-12 review as *the proposal*. This doc pins only the field list and what each is for; the concrete wire schema is low-level design, drafted separately in [envelope-schema.md](envelope-schema.md) and finalized in the v0 spec.
 
 | Field | Purpose | Origin |
 |---|---|---|
@@ -124,6 +126,7 @@ The product brief settles four fields: **artifact reference, thread ID, provenan
 | In-reply-to | The prior envelope on the thread this one answers | Proposed |
 | Priority | Queue ordering; surfaced in the console and adjustable under saturation | Proposed |
 | Created-at | Timestamp; powers queue age and latency metrics | Proposed |
+| Message body (optional) | Conversational text accompanying the verb (≤ 12 KB) — remarks, escalation reasons, rejection rationale, chat turns. The conversation is part of the record; the work product stays by-reference in the artifact | Ratified 2026-07-16 (PR #2) |
 
 ### 4.1 The verb set
 
@@ -168,7 +171,7 @@ Points to notice:
 - The workflow calls took the **direct-enqueue path**: standing offers were accepted at workflow creation, so no per-call handshake — but every enqueue was still ledger-recorded at the queue-write chokepoint.
 - The **escalation is a normal envelope** on the same thread — as a first-contact call it goes through the Exchange handshake before landing in Varsha's inbox. No side channels.
 - The Orchestrator only saw **verbs**, never diff content or review semantics.
-- If the run had instead produced `revise` feedback, the coding agent's revised diff re-enters on the **same `thread_id`**, and the workflow's next state waits on the next terminal verb. States are conversations and can wait days.
+- If the run had instead produced `revise` feedback, the coding agent's revised diff re-enters on the **same `thread_id`**, and the workflow's next state waits on the next terminal verb — up to that state's declared wait cap (default 24 h, §9.4), after which the run times out and is ledger-recorded.
 
 ### 5.3 Ad-hoc call
 
@@ -195,11 +198,11 @@ When an agent endpoint's queue saturates (e.g. `review-agent@mohit.acme` at repl
 | Concern | Position |
 |---|---|
 | Trust boundary | Endpoints are untrusted edges; the switchboard substrate is the trusted core. Everything an endpoint asserts (manifest, acceptance, envelopes) is recorded as *its* assertion, attributable via its credential. |
-| Artifact custody | The switchboard carries **references + digests**, not bodies. Artifact stores enforce their own access control; a leaked ledger never leaks artifact content. Digest lets recipients verify what they fetched is what was offered. |
-| Tenancy | v0 is single-org. All addresses live in one org namespace; cross-org federation is deferred (§10) and must not be accidentally half-built. |
-| Auditability | Append-only ledger, complete by construction (no side channels). Ledger writes are part of the delivery path, not best-effort telemetry. Entries are never edited; an org-configurable retention window may expire old entries per policy. |
+| Artifact custody | The switchboard carries **references + digests**, not bodies. Bodies live in the org's existing systems of record (GitHub for diffs, doc stores for documents), which the single-org pilot's endpoints already share access to; for freshly generated artifacts the reference deployment designates **one org-shared object-store bucket** — a deployment convention, not a switchboard component — so agents don't each bring their own storage. Artifact stores enforce their own access control; a leaked ledger never leaks artifact content. Digest lets recipients verify what they fetched is what was offered. |
+| Tenancy | v0 is single-org. All addresses live in one org namespace; cross-org federation is deferred (§11) and must not be accidentally half-built. |
+| Auditability | Append-only ledger, complete by construction (no side channels). Ledger writes are part of the delivery path, not best-effort telemetry. Entries are never edited; an org-configurable retention window may expire old entries per policy. The ledger contains **message bodies** (the conversation) but never **artifact bodies** (the work); role-gated queries and the retention window bound that exposure. |
 | Least privilege in the console | Directory is org-visible; queue intervention is owner-only; ledger queries are role-gated (governance roles can query across endpoints). |
-| Abuse pressure valve | Unknown/noisy callers are handled by endpoint-side decline logic today; a switchboard-side "quarantine pen" tier is an open question (§10), explicitly not in v0. |
+| Abuse pressure valve | Unknown/noisy callers are handled by endpoint-side decline logic today; a switchboard-side "quarantine pen" tier is an open question (§11), explicitly not in v0. |
 
 ## 8. Cross-cutting: observability
 
@@ -209,7 +212,57 @@ Correlation is built into the contract: `thread_id` (conversation), `session_id`
 - **Ledger vs. telemetry:** the ledger is the durable record of *what happened between parties*; metrics/logs/traces are operational exhaust of *how the substrate performed*. The ledger is never sampled; telemetry can be.
 - **Health of the edges:** endpoint status (online/away/saturated) in the registry is self-reported plus liveness-checked (missed handshakes degrade status). Saturation is a first-class observable state, since the human-intervention model depends on noticing it.
 
-## 9. Proposed reference stack (default-but-revisable)
+## 9. Non-functional requirements (v0)
+
+Anchored to the ratified v0 scale target: **pilot — one team** (~50 endpoints, low thousands of messages/day, single region, single org). All parameters below were ratified in the 2026-07-15 NFR walkthrough (§13, entries 8–9). They size the pilot — not the eventual product.
+
+### 9.1 Scale
+
+| Dimension | v0 target |
+|---|---|
+| Registered endpoints | 50 (humans + agents), design ceiling 200 without rework |
+| Envelope volume | 5,000/day sustained; bursts of 10/s during workflow fan-out |
+| Concurrent open sessions | 500 total across the switchboard (not per endpoint) |
+| Workflow runs in flight | 100 total across all workflow definitions |
+| Regions / orgs | 1 / 1 |
+
+These are sizing targets, not quotas. **Fairness limits (ratified in PR #2 review):** each endpoint may hold at most **25 concurrent sessions as caller** (default; org-configurable per endpoint), and each workflow definition carries a **max-concurrent-runs limit declared in the definition** (default 10). The switchboard `defer`s the excess with standard retry semantics, so a noisy caller or hot workflow degrades only itself. Below those limits, fairness is structural: queues are per-endpoint (a flooded endpoint slows only its own queue) and each queue orders by priority then age.
+
+### 9.2 Latency
+
+Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for durability over raw speed. Budgets below are the switchboard's own overhead (endpoint think-time excluded), p95:
+
+| Path | Budget |
+|---|---|
+| Registry resolve + manifest read (hot path of every offer) | ≤ 100 ms |
+| Handshake transit (offer out + reply in, excluding callee decision time) | ≤ 400 ms |
+| Enqueue: verb emission → visible in callee's queue (ledger write + SQS send) | ≤ 1 s |
+| Handshake timeout (silence = implicit decline) | 60 s default, per-offer configurable |
+| Console / ledger queries (endpoint- or workflow-scoped) | ≤ 4 s |
+
+### 9.3 Durability
+
+- **No accepted envelope is ever lost.** The ledger row commits in Postgres *before* the SQS send (§3.4); if the ledger write fails, the enqueue fails and the caller/orchestrator retries. If the ledger commit succeeds but the SQS send fails, the entry is re-driven from the ledger (transactional outbox, §3.4) until the send is acknowledged. Delivery is at-least-once; consumers dedupe on envelope ID.
+- **Queue items must survive waits.** SQS retention is capped at 14 days; items still undelivered at that horizon (e.g. a paused queue) are automatically re-driven by the queue service rather than expiring silently.
+- **Postgres** runs with point-in-time-recovery backups: RPO ≤ 5 minutes, RTO ≤ 4 hours for the pilot.
+
+### 9.4 Long-lived state
+
+- Workflow waits are capped **per state, declared by the workflow author, defaulting to 24 hours**. A state that exceeds its cap times out, fails fast, and is ledger-recorded; re-triggering is explicit. Workflows that legitimately wait longer (leave coverage, multi-day reviews) declare a longer cap up front — the default keeps stuck runs surfacing within a day without forbidding the brief's days-long conversations (§13, entry 9). Waits survive deploys and restarts and cost no compute while idle (Temporal durable timers).
+- Threads have no expiry in v0. Ledger retention defaults to **1 year** (org-configurable; the v0 spec sets the floor — see §11).
+- Endpoint restarts or redeploys never lose queue position or workflow state.
+
+### 9.5 Availability
+
+- **99.5% monthly** for the pilot (~3.6 h/month error budget); no cross-region DR in v0.
+- Degradation order is fixed: under pressure the switchboard may fail new handshakes, but never compromises durability of already-accepted envelopes.
+
+### 9.6 Cost
+
+- Infrastructure spend is capped at **≤ $50/month** at pilot volume. Any design choice that busts the ceiling needs a written reason.
+- Consequence: the four services (§3) keep their logical and API boundaries but **co-locate on shared small compute** in the pilot deployment (one small host/cluster running all four plus Temporal, one small Postgres, SQS pay-per-use ≈ $0). The service split is an architectural seam, not four dedicated instances.
+
+## 10. Proposed reference stack (default-but-revisable)
 
 Locked above: the logical boundaries, the envelope contract, the handshake, and the invariants. The stack below was **ratified in the 2026-07-12 review** as the default for the per-component stories and M1 seeding — revisable with a written reason, without reopening the architecture.
 
@@ -217,13 +270,13 @@ Locked above: the logical boundaries, the envelope contract, the handshake, and 
 |---|---|---|
 | Deployment shape | **Four services**: Exchange, Queues, and Registry each stand alone; one control-plane service hosts Orchestrator (`/workflows`) and Ledger (`/ledger`) as separate API paths | Each hot-path concern (handshaking, delivery) and the read-heavy Registry scale independently; the lower-traffic Orchestrator and Ledger share one deployable behind distinct paths. |
 | System of record | **PostgreSQL** for registry, ledger (append-only tables with retention policy), and workflow metadata | One durable substrate for state; the ledger-write-before-enqueue ordering (§3.4) keeps "complete by construction" honest. |
-| Queue mechanics | **AWS SQS**, one queue per endpoint | Managed, pay-per-use (effectively free at v0 volume), no broker to operate. Couples the reference deployment to AWS — accepted for v0; abstraction seam for self-hosters is an open question (§10). |
+| Queue mechanics | **AWS SQS**, one queue per endpoint | Managed, pay-per-use (effectively free at v0 volume), no broker to operate. Couples the reference deployment to AWS — accepted for v0; abstraction seam for self-hosters is an open question (§11). |
 | Endpoint protocol | HTTPS + JSON. Offers pushed via signed webhook (with long-poll fallback); agents pull queues; humans via console/inbox | Lowest integration bar for agent developers; handshake timeout = implicit decline maps cleanly onto webhook semantics. |
-| Orchestrator engine | **Temporal**, self-hosted, backed by the same Postgres | Durable execution designed exactly for days-long waits and fan-out/join; self-hostable so the OSS story holds. |
+| Orchestrator engine | **Temporal**, self-hosted, backed by the same Postgres | Durable execution for restart-proof waits (per-state caps, 24 h default, §9.4) and fan-out/join; self-hostable so the OSS story holds. |
 | Envelope wire format | JSON per §4, schema-versioned (`envelope/v0`) | The envelope is the compatibility surface; version it from day one. |
 | Console | React SPA (evolves from the existing mock) over the same APIs endpoints use | The console is a client, not a component; keeps the substrate honest about its API. |
 
-## 10. Open questions and deferred decisions
+## 11. Open questions and deferred decisions
 
 Explicitly **not** blocking M0 close; owners should land these in the v0 spec or later milestones.
 
@@ -235,19 +288,19 @@ Explicitly **not** blocking M0 close; owners should land these in the v0 spec or
 6. **Queue abstraction seam for self-hosters** — the SQS default couples the reference deployment to AWS (accepted for v0 in the 2026-07-12 review). Define the narrow queue interface so non-AWS adopters can slot in an alternative backend.
 7. **Ledger retention defaults** — the retention window is org-configurable (§3.6); the v0 spec should propose a sane default and floor.
 
-## 11. How this feeds the v0 spec
+## 12. How this feeds the v0 spec
 
-The v0 spec ("v0 specification frozen", the M0 exit gate) consolidates, from this document: the envelope schema (§4) and verb set semantics (§4.1), the handshake protocol (§5.1) including timeout and defer/retry semantics, the registry API shape (§3.2, §6), and the invariants in §2.1/§4. The five per-component M0 stories inherit their boundaries and non-responsibilities from §3 and must flag any contradiction with this document rather than silently diverging.
+The v0 spec ("v0 specification frozen", the M0 exit gate) consolidates, from this document: the envelope schema (§4) and verb set semantics (§4.1), the handshake protocol (§5.1) including timeout and defer/retry semantics, the registry API shape (§3.2, §6), the NFR targets (§9), and the invariants in §2.1/§4. The five per-component M0 stories inherit their boundaries and non-responsibilities from §3 and must flag any contradiction with this document rather than silently diverging.
 
 **Acceptance criteria mapping (from the Asana task):**
 
-- *Reviewed and agreed by stakeholders* — all seven decision areas ratified in the 2026-07-12 walkthrough (§12); remaining stakeholders to co-sign.
-- *No unresolved cross-component contradictions* — §3 assigns every responsibility to exactly one component and lists explicit non-responsibilities; contradictions found in review go in §10 or get resolved here.
-- *Explicitly feeds the v0 spec* — §11.
+- *Reviewed and agreed by stakeholders* — all seven decision areas ratified in the 2026-07-12 walkthrough, plus the PR #1 review amendments and the v0 scale anchor (§13); remaining stakeholders to co-sign.
+- *No unresolved cross-component contradictions* — §3 assigns every responsibility to exactly one component and lists explicit non-responsibilities; contradictions found in review go in §11 or get resolved here.
+- *Explicitly feeds the v0 spec* — §12.
 
-## 12. Decision log
+## 13. Decision log
 
-Ratified in the stakeholder walkthrough on **2026-07-12** (reviewer: Mohit Gupta). "Confirmed" = the draft's proposal stands; "Changed" = the draft was revised to the outcome below.
+Ratified in the stakeholder walkthrough on **2026-07-12**, with amendments from the PR #1 review and the v0 scale decision on **2026-07-15** (reviewer: Mohit Gupta). "Confirmed" = the draft's proposal stands; "Changed" = the draft was revised to the outcome below.
 
 | # | Area | Outcome |
 |---|---|---|
@@ -258,3 +311,7 @@ Ratified in the stakeholder walkthrough on **2026-07-12** (reviewer: Mohit Gupta
 | 5 | Security | **Confirmed** (a) per-endpoint credentials, switchboard as trust broker; (b) single-org v0. **Changed** (c) ledger append-only *plus* org-configurable retention window, replacing "never deleted, ever". |
 | 6 | Reference stack | **Changed** — AWS SQS for queues; Temporal for workflows. Postgres system of record and HTTPS/JSON + signed-webhook protocol unchanged. Deployment shape initially two services (hot path / control plane); **amended 2026-07-15 in PR #1 review** to four services — Exchange, Queues, and Registry standalone, control plane hosting Orchestrator + Ledger as API paths. |
 | 7 | Console | **Confirmed** — a client of the public APIs, not a sixth component; no privileged back door. |
+| 8 | v0 scale anchor | **Ratified 2026-07-15** — NFRs target pilot scale: one team, ~50 endpoints, low thousands of messages/day, single region/org. |
+| 9 | NFR parameters | **Ratified 2026-07-15** — latency budgets relaxed to 100 ms / 400 ms / 1 s / 4 s p95; handshake timeout 60 s; durability RPO ≤ 5 min, RTO ≤ 4 h, auto-re-drive past SQS's 14-day cap; workflow wait caps are **per-state, author-declared, defaulting to 24 h** (initially a hard 24 h cap; softened same day to the configurable default so days-long workflows declare their needs up front — reconciles with the brief's "can wait days"); ledger retention 1 year default; availability 99.5% monthly, no cross-region DR; **cost ceiling $50/month** (four services co-locate on shared compute in the pilot). Amended 2026-07-16 in PR #2 review: fairness via **per-endpoint session limits** (default 25) and **per-workflow-definition run limits** (default 10), replacing the briefly proposed 20%-of-global guardrail. |
+| 10 | Envelope schema specifics | **Ratified 2026-07-15** — IDs are switchboard-minted prefixed **UUIDv4s** (ordering via `created_at`); priority **0–9, lower = urgent, default 4, 0 reserved for human take-over**; **16 KB** envelope cap; **strict fields** (unknown fields rejected, no extension bag); **set-once immutability** (corrections are new envelopes); **sha256-only** digests. See [envelope-schema.md](envelope-schema.md). |
+| 11 | Message body vs artifact body | **Ratified 2026-07-16 (PR #2 review)** — envelopes gain an optional inline **`body` ≤ 12 KB** for conversational text (including chat-style exchanges), delivered via queues and stored in the ledger as part of the record. Artifact bodies remain by-reference only. Rationale: the conversation is exactly what the ledger must capture — forcing prose into artifact stores (or Slack) would recreate side channels. Sub-artifact references from bodies use **URI fragments** on the canonical artifact ref (`#L40-L60`); per-type conventions land in the v0 spec; interpretation is client-side only. |
