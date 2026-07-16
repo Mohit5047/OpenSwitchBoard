@@ -70,7 +70,7 @@ JSON, schema-versioned. Every payload that moves through the switchboard is exac
       }
     },
     "priority": { "type": "integer", "minimum": 0, "maximum": 9, "default": 4 },
-    "created_at": { "type": "string", "format": "date-time" }
+    "created_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$" }
   },
   "$defs": {
     "address": {
@@ -86,6 +86,9 @@ JSON, schema-versioned. Every payload that moves through the switchboard is exac
 
 - **Closed verb set.** The seven-verb enum is closed in v0 (decision log #2); workflow joins key off verb emissions.
 - **IDs** are switchboard-assigned UUIDv4s with type prefixes (`env_`, `thr_`, `ses_`). Endpoints never mint them. Chronological ordering comes from `created_at`, not the ID.
+- **`artifact`** — the work item this envelope is about. `type` (e.g. `diff`, `design-doc`) is matched against the callee's capability manifest at handshake, so an endpoint is never offered work it can't handle. `ref` is a URI pointing to where the body actually lives (GitHub, Drive, an artifact store) — the switchboard never stores or fetches it. `digest` is the sha256 fingerprint of that content: the recipient hashes what it fetches from `ref` and compares, proving nobody swapped the artifact after the offer.
+- **`provenance`** — where the envelope came from. `workflow_run` names the orchestrator run that produced it (`wf:<workflow>#<run>`), or the literal `ad-hoc` for direct dials. `on_behalf_of` is the human or team the sending agent acts for — this is what makes "who did this, for whom" answerable from the ledger alone. `in_reply_to` points at the earlier envelope on the thread this one answers, giving exact conversation ordering.
+- **Timestamps are UTC.** `created_at` is RFC 3339 with a mandatory `Z` suffix — the schema rejects local-time offsets. The switchboard assigns it at acceptance; endpoints never set it.
 - **`priority`** — 0 (highest, reserved for owner take-over) through 9; default 4. Queues sort by priority, then age.
 - **`session_id`** — ad-hoc/first-contact calls get one session per call; standing offers open one long-lived session per workflow–endpoint pair at workflow creation.
 - **Envelope size** — the envelope itself is metadata-only and must stay small; artifact bodies are never inline (architecture decision log #4). Cap: **16 KB** per serialized envelope (ratified).

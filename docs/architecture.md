@@ -76,6 +76,7 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 **Owns:** durable, per-endpoint delivery buffers. **Switchboard-owned** — endpoints do not host their own queues. Backed by **AWS SQS**, one queue per endpoint (see §10 for the abstraction seam).
 
 - The queue-write API is the **single chokepoint** shared by both delivery paths (Exchange and Orchestrator). Every enqueue writes its ledger entry in Postgres *first*, then sends to SQS with an idempotency key; delivery is at-least-once and consumers deduplicate on `envelope_id`. This ordering is what makes the ledger complete by construction even with two writers.
+- The ledger row doubles as a **transactional outbox** entry carrying a delivered-to-queue marker. If the SQS send fails — or the process dies between the Postgres commit and the send — a sweeper re-drives unmarked rows until SQS acknowledges; the sender only sees enqueue success after that acknowledgment. Duplicate sends from re-drives are harmless because consumers dedupe on `envelope_id`.
 - **Agents pull** from their queue; cloud agents autoscale to a budget cap to drain them.
 - **Humans see the same queue as a Slack-like inbox** — one queue abstraction, two presentations.
 - Entries carry priority, age, originating workflow (or `ad-hoc`), caller, verb, and artifact reference.
@@ -219,8 +220,8 @@ Anchored to the ratified v0 scale target: **pilot — one team** (~50 endpoints,
 |---|---|
 | Registered endpoints | 50 (humans + agents), design ceiling 200 without rework |
 | Envelope volume | 5,000/day sustained; bursts of 10/s during workflow fan-out |
-| Concurrent open sessions | 500 |
-| Workflow runs in flight | 100 |
+| Concurrent open sessions | 500 total across the switchboard (not per endpoint) |
+| Workflow runs in flight | 100 total across all workflow definitions |
 | Regions / orgs | 1 / 1 |
 
 ### 9.2 Latency
@@ -237,7 +238,7 @@ Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for d
 
 ### 9.3 Durability
 
-- **No accepted envelope is ever lost.** The ledger row commits in Postgres *before* the SQS send (§3.4); if the ledger write fails, the enqueue fails and the caller/orchestrator retries. Delivery is at-least-once; consumers dedupe on envelope ID.
+- **No accepted envelope is ever lost.** The ledger row commits in Postgres *before* the SQS send (§3.4); if the ledger write fails, the enqueue fails and the caller/orchestrator retries. If the ledger commit succeeds but the SQS send fails, the entry is re-driven from the ledger (transactional outbox, §3.4) until the send is acknowledged. Delivery is at-least-once; consumers dedupe on envelope ID.
 - **Queue items must survive waits.** SQS retention is capped at 14 days; items still undelivered at that horizon (e.g. a paused queue) are automatically re-driven by the queue service rather than expiring silently.
 - **Postgres** runs with point-in-time-recovery backups: RPO ≤ 5 minutes, RTO ≤ 4 hours for the pilot.
 
