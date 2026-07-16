@@ -109,7 +109,7 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 
 Every payload that moves through the switchboard is wrapped in an envelope. This is the one schema all five components share, and it is what keeps Switchboard workflow-agnostic.
 
-The product brief settles four fields: **artifact reference, thread ID, provenance, and verb**. Seven supporting fields were ratified in the 2026-07-12 review as *the proposal*. This doc pins only the field list and what each is for; the concrete wire schema (JSON encoding, field types, size limits, error envelopes) is low-level design and lands with the envelope story in the v0 spec.
+The product brief settles four fields: **artifact reference, thread ID, provenance, and verb**. Seven supporting fields were ratified in the 2026-07-12 review as *the proposal*. This doc pins only the field list and what each is for; the concrete wire schema is low-level design, drafted separately in [envelope-schema.md](envelope-schema.md) and finalized in the v0 spec.
 
 | Field | Purpose | Origin |
 |---|---|---|
