@@ -88,7 +88,7 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 **Owns:** declarative, Step-Functions-style workflows over endpoints. Runs on **Temporal** (self-hosted, backed by the same Postgres — see §10).
 
 - Shape: **trigger → fan-out → join on verb emissions → continuation.** A workflow never encodes what work means — joins key off verbs (e.g. "wait until both callees emit `respond` or any emits `reject`").
-- **States are conversations and can wait days.** Temporal's durable execution covers restarts and makes idle waits cheap.
+- **States are conversations.** Waits are durable across deploys and restarts and cost nothing while idle (Temporal), but are **capped at 24 hours per state** (§9.4): a state waiting longer times out, fails the run fast, and is ledger-recorded.
 - **Standing offers:** when a workflow is created, the Orchestrator performs the handshake with every referenced endpoint once, up front. Runs then execute without per-call friction and **fail fast on declines** at creation time rather than mid-run.
 - **Direct enqueue:** because standing offers were already accepted, workflow calls skip the per-call Exchange hop — the Orchestrator writes straight to the callee's queue via the ledger-recorded queue-write API (§3.4).
 - **Ad-hoc mode:** any endpoint can dial any other directly ("New call"), producing a single-session micro-workflow that goes through the full Exchange handshake, queueing, and ledger treatment.
@@ -168,7 +168,7 @@ Points to notice:
 - The workflow calls took the **direct-enqueue path**: standing offers were accepted at workflow creation, so no per-call handshake — but every enqueue was still ledger-recorded at the queue-write chokepoint.
 - The **escalation is a normal envelope** on the same thread — as a first-contact call it goes through the Exchange handshake before landing in Varsha's inbox. No side channels.
 - The Orchestrator only saw **verbs**, never diff content or review semantics.
-- If the run had instead produced `revise` feedback, the coding agent's revised diff re-enters on the **same `thread_id`**, and the workflow's next state waits on the next terminal verb. States are conversations and can wait days.
+- If the run had instead produced `revise` feedback, the coding agent's revised diff re-enters on the **same `thread_id`**, and the workflow's next state waits on the next terminal verb — up to the 24-hour per-state cap (§9.4), after which the run times out and is ledger-recorded.
 
 ### 5.3 Ad-hoc call
 
@@ -211,7 +211,7 @@ Correlation is built into the contract: `thread_id` (conversation), `session_id`
 
 ## 9. Non-functional requirements (v0)
 
-Anchored to the ratified v0 scale target: **pilot — one team** (~50 endpoints, low thousands of messages/day, single region, single org), per the 2026-07-15 decision (§13). Numbers below are the NFR list the build must meet; they are proposals pending PR review, and they size the pilot with headroom — not the eventual product.
+Anchored to the ratified v0 scale target: **pilot — one team** (~50 endpoints, low thousands of messages/day, single region, single org). All parameters below were ratified in the 2026-07-15 NFR walkthrough (§13, entries 8–9). They size the pilot — not the eventual product.
 
 ### 9.1 Scale
 
@@ -229,11 +229,11 @@ Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for d
 
 | Path | Budget |
 |---|---|
-| Registry resolve + manifest read (hot path of every offer) | ≤ 50 ms |
-| Handshake transit (offer out + reply in, excluding callee decision time) | ≤ 200 ms |
-| Enqueue: verb emission → visible in callee's queue (ledger write + SQS send) | ≤ 500 ms |
-| Handshake timeout (silence = implicit decline) | 30 s default, per-offer configurable |
-| Console / ledger queries (endpoint- or workflow-scoped) | ≤ 2 s |
+| Registry resolve + manifest read (hot path of every offer) | ≤ 100 ms |
+| Handshake transit (offer out + reply in, excluding callee decision time) | ≤ 400 ms |
+| Enqueue: verb emission → visible in callee's queue (ledger write + SQS send) | ≤ 1 s |
+| Handshake timeout (silence = implicit decline) | 60 s default, per-offer configurable |
+| Console / ledger queries (endpoint- or workflow-scoped) | ≤ 4 s |
 
 ### 9.3 Durability
 
@@ -243,7 +243,7 @@ Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for d
 
 ### 9.4 Long-lived state
 
-- Workflow runs must be able to **wait ≥ 30 days** mid-conversation, surviving deploys and restarts, with idle waits costing no compute (Temporal durable timers).
+- Workflow waits are **capped at 24 hours per state**: a run waiting longer times out, fails fast, and is ledger-recorded; re-triggering is explicit. Waits survive deploys and restarts and cost no compute while idle (Temporal durable timers). *This is a deliberate override of the brief's "states can wait days" (§13, entry 9) — timeouts surface stuck runs within a day instead of letting them linger.*
 - Threads have no expiry in v0. Ledger retention defaults to **1 year** (org-configurable; the v0 spec sets the floor — see §11).
 - Endpoint restarts or redeploys never lose queue position or workflow state.
 
@@ -251,6 +251,11 @@ Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for d
 
 - **99.5% monthly** for the pilot (~3.6 h/month error budget); no cross-region DR in v0.
 - Degradation order is fixed: under pressure the switchboard may fail new handshakes, but never compromises durability of already-accepted envelopes.
+
+### 9.6 Cost
+
+- Infrastructure spend is capped at **≤ $50/month** at pilot volume. Any design choice that busts the ceiling needs a written reason.
+- Consequence: the four services (§3) keep their logical and API boundaries but **co-locate on shared small compute** in the pilot deployment (one small host/cluster running all four plus Temporal, one small Postgres, SQS pay-per-use ≈ $0). The service split is an architectural seam, not four dedicated instances.
 
 ## 10. Proposed reference stack (default-but-revisable)
 
@@ -262,7 +267,7 @@ Locked above: the logical boundaries, the envelope contract, the handshake, and 
 | System of record | **PostgreSQL** for registry, ledger (append-only tables with retention policy), and workflow metadata | One durable substrate for state; the ledger-write-before-enqueue ordering (§3.4) keeps "complete by construction" honest. |
 | Queue mechanics | **AWS SQS**, one queue per endpoint | Managed, pay-per-use (effectively free at v0 volume), no broker to operate. Couples the reference deployment to AWS — accepted for v0; abstraction seam for self-hosters is an open question (§11). |
 | Endpoint protocol | HTTPS + JSON. Offers pushed via signed webhook (with long-poll fallback); agents pull queues; humans via console/inbox | Lowest integration bar for agent developers; handshake timeout = implicit decline maps cleanly onto webhook semantics. |
-| Orchestrator engine | **Temporal**, self-hosted, backed by the same Postgres | Durable execution designed exactly for days-long waits and fan-out/join; self-hostable so the OSS story holds. |
+| Orchestrator engine | **Temporal**, self-hosted, backed by the same Postgres | Durable execution for restart-proof waits (24 h per-state cap, §9.4) and fan-out/join; self-hostable so the OSS story holds. |
 | Envelope wire format | JSON per §4, schema-versioned (`envelope/v0`) | The envelope is the compatibility surface; version it from day one. |
 | Console | React SPA (evolves from the existing mock) over the same APIs endpoints use | The console is a client, not a component; keeps the substrate honest about its API. |
 
@@ -301,4 +306,5 @@ Ratified in the stakeholder walkthrough on **2026-07-12**, with amendments from 
 | 5 | Security | **Confirmed** (a) per-endpoint credentials, switchboard as trust broker; (b) single-org v0. **Changed** (c) ledger append-only *plus* org-configurable retention window, replacing "never deleted, ever". |
 | 6 | Reference stack | **Changed** — AWS SQS for queues; Temporal for workflows. Postgres system of record and HTTPS/JSON + signed-webhook protocol unchanged. Deployment shape initially two services (hot path / control plane); **amended 2026-07-15 in PR #1 review** to four services — Exchange, Queues, and Registry standalone, control plane hosting Orchestrator + Ledger as API paths. |
 | 7 | Console | **Confirmed** — a client of the public APIs, not a sixth component; no privileged back door. |
-| 8 | v0 scale anchor | **Ratified 2026-07-15** — NFRs target pilot scale: one team, ~50 endpoints, low thousands of messages/day, single region/org. Full NFR list in §9, proposed pending PR review. |
+| 8 | v0 scale anchor | **Ratified 2026-07-15** — NFRs target pilot scale: one team, ~50 endpoints, low thousands of messages/day, single region/org. |
+| 9 | NFR parameters | **Ratified 2026-07-15** — latency budgets relaxed to 100 ms / 400 ms / 1 s / 4 s p95; handshake timeout 60 s; durability RPO ≤ 5 min, RTO ≤ 4 h, auto-re-drive past SQS's 14-day cap; **workflow waits capped at 24 h per state (deliberate override of the brief's "can wait days")**; ledger retention 1 year default; availability 99.5% monthly, no cross-region DR; **cost ceiling $50/month** (four services co-locate on shared compute in the pilot). |
