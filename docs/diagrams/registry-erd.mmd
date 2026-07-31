@@ -1,0 +1,72 @@
+erDiagram
+    ENDPOINT {
+        text address PK "the identity - never reused"
+        enum kind "human or agent"
+        enum lifecycle_state "registering, active, suspended, deregistered"
+        enum visibility "listed or unlisted"
+        text maintainer_address FK "set when a human maintains it"
+        text maintainer_team FK "set when a team maintains it"
+        integer current_manifest_version "null until first publish"
+        timestamp created_at
+        timestamp deregistered_at "null while live"
+    }
+
+    MANIFEST_VERSION {
+        text address PK "also FK to endpoint"
+        integer version PK "monotonic per endpoint"
+        document manifest "the whole published document"
+        enum change_class "initial, widening, narrowing, catalog_only"
+        text published_by "credential that published it"
+        timestamp published_at
+    }
+
+    ENDPOINT_ACCEPTS {
+        text address PK "also FK to endpoint"
+        text verb PK "one of the seven"
+        text artifact_type PK "also FK to artifact_type"
+    }
+
+    ENDPOINT_OBSERVED {
+        text address PK "also FK to endpoint"
+        enum status "online, away, saturated"
+        integer queue_depth "fed by the queue service"
+        integer oldest_item_age_s
+        integer replicas_current
+        timestamp last_seen_at
+        timestamp as_of "freshness of this snapshot"
+    }
+
+    CREDENTIAL {
+        text credential_id PK
+        text address FK "the endpoint it authenticates"
+        text secret_hash
+        timestamp issued_at
+        timestamp revoked_at "null while valid"
+    }
+
+    TEAM {
+        text team_id PK "team:payments@acme"
+        text display_name
+        timestamp created_at
+    }
+
+    TEAM_MEMBER {
+        text team_id PK "also FK to team"
+        text member_address PK "a human endpoint"
+    }
+
+    ARTIFACT_TYPE {
+        text type_id PK "diff, design-doc, incident"
+        text display_name
+        text description
+        text fragment_convention "line ranges, section anchors"
+    }
+
+    ENDPOINT ||--o{ MANIFEST_VERSION : "publishes (append-only)"
+    ENDPOINT ||--o| ENDPOINT_OBSERVED : "has live snapshot"
+    ENDPOINT ||--o{ ENDPOINT_ACCEPTS : "current manifest projects to"
+    ENDPOINT ||--o{ CREDENTIAL : "authenticates with"
+    TEAM ||--o{ ENDPOINT : "maintains (team maintainer)"
+    TEAM ||--o{ TEAM_MEMBER : "has"
+    ENDPOINT ||--o{ TEAM_MEMBER : "is a member via"
+    ARTIFACT_TYPE ||--o{ ENDPOINT_ACCEPTS : "vocabulary for"
