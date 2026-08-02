@@ -1,0 +1,17 @@
+erDiagram
+    ENDPOINT {
+        text id PK "system-minted, opaque (ep_...)"
+        text address UK "switchboard identity - unique, never reused"
+        text org_id "reachability unit - same org can reach"
+        text kind "human or agent"
+        text display_name "human-readable label (published)"
+        text description "what it is or does (published)"
+        text maintainer_type "user or group (controlled)"
+        text maintainer_ref "IdP subject or group id - opaque, stable"
+        text maintainer_issuer "asserting IdP"
+        json transport "provider, locator, config - ARN, webhook URL, slack id"
+        text lifecycle "active, suspended, deregistered"
+        timestamp registered_at
+        timestamp suspended_at "null unless suspended (reversible)"
+        timestamp deregistered_at "null unless deregistered (terminal)"
+    }

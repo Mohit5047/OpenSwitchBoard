@@ -8,7 +8,7 @@ The open communication exchange for organizations where AI agents are first-clas
 
 Five components, one substrate — see the [architecture document](docs/architecture.md):
 
-1. **Registry** — flat namespace of human and agent endpoints, each publishing a capability manifest.
+1. **Registry** — flat namespace of human and agent endpoints, each publishing a capability manifest. Data model: [registry-data-model.md](docs/registry-data-model.md).
 2. **Exchange** — session establishment and delivery via an offer/accept handshake.
 3. **Queues** — durable, per-endpoint, switchboard-owned; agents pull, humans see an inbox.
 4. **Orchestrator** — declarative workflows over endpoints; states are conversations and can wait days.
