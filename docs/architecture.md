@@ -49,15 +49,15 @@ There are exactly **two delivery paths** into an endpoint's queue: the Exchange 
 
 ### 3.2 Registry
 
-**Owns:** the flat namespace of endpoints and their capability manifests.
+**Owns:** the flat namespace of endpoints — one record per endpoint (see [registry-data-model.md](registry-data-model.md)).
 
 - Humans and agents are **separate, co-equal endpoints**: `varsha@acme` (human), `review-agent@varsha.acme` (her agent). Agents can be personal or team-owned infrastructure (`payments-review@acme`).
-- Each endpoint publishes a **capability manifest**: accepted verbs, accepted artifact types, current queue depth, maintainer, status (online/away/saturated), and for agents, replica/scale info.
-- The registry is the **discovery surface**: callers browse/search it and choose whom to dial (no personal routing layer).
+- Each endpoint record carries **identity and reachability, not capabilities**: address, `org_id`, kind, a human-readable `display_name` and `description`, a registry-controlled `maintainer` (an IdP principal — user or group), and a typed `transport` (where the endpoint lives and how to reach it — ARN, webhook URL, Slack id). There is **no capability manifest**: the switchboard does not store, or match against, an endpoint's accepted verbs or artifact types.
+- The registry is the **discovery surface**: callers browse/search by description and choose whom to dial (no personal routing layer). Live status and queue depth are **composed at read time** from the Queue service, not stored here.
 
-**Does not:** route, decide reachability, or enforce who may dial whom. Visibility + the endpoint's right to decline is the access model.
+**Does not:** route, enforce fine-grained call graphs, or record what an endpoint can do. Reachability is coarse **org membership** (§6); the endpoint's right to decline at handshake does the rest.
 
-**Interfaces:** register/update endpoint, publish manifest, resolve address, query directory. Manifest reads by the Exchange are on the hot path of every offer.
+**Interfaces:** register/update endpoint, resolve address (→ transport + reachability), query directory. The resolve is on the hot path of every offer.
 
 ### 3.3 Exchange
 
@@ -117,7 +117,7 @@ The product brief settles four fields: **artifact reference, thread ID, provenan
 |---|---|---|
 | Verb | Exactly one of the universal set (§4.1) | Brief |
 | Thread ID | Conversation identity; stable across revise loops | Brief |
-| Artifact reference + type | Pointer to the work item; type is matched against the callee's manifest at handshake. Bodies live outside the switchboard | Brief |
+| Artifact reference + type | Pointer to the work item; `type` is metadata the callee uses to decide at handshake — the switchboard neither stores a manifest nor matches on it. Bodies live outside the switchboard | Brief |
 | Provenance (workflow run, on-behalf-of) | Which workflow run (or `ad-hoc`) produced it; the human/team an agent acts for | Brief |
 | Envelope ID | Unique, switchboard-assigned identifier per message; dedupe and ledger reference | Proposed |
 | From / To | Sender and recipient endpoint addresses | Proposed |
@@ -145,14 +145,14 @@ One verb per envelope, from a small universal set. Workflow joins key off verb e
 **Invariants:**
 
 - The verb set is **closed in v0**. Extending it is a spec change, not a configuration option — every component and every workflow join depends on its stability.
-- The switchboard never interprets artifact content; `artifact.type` exists only for manifest matching at handshake time.
+- The switchboard never interprets artifact content; `artifact.type` is offer metadata the callee uses to decide, not something the switchboard matches or enforces.
 - `thread_id` is the unit of conversation (a PR review across five turns is one thread); `session_id` is the unit of handshaken delivery. Ad-hoc and first-contact calls open a session per call; a standing offer opens one long-lived session per workflow–endpoint pair at workflow creation, and all direct-enqueued envelopes for that pair travel on it. A thread may span multiple sessions (e.g. an escalation opens a new session to the human).
 
 ## 5. End-to-end data flow
 
 ### 5.1 The handshake (session establishment)
 
-![Handshake sequence: caller dials, Exchange resolves the callee's manifest via the Registry, sends the offer, and the callee's accept, decline, or defer is recorded to the Ledger](diagrams/handshake.png)
+![Handshake sequence: caller dials, Exchange resolves the callee's transport and org via the Registry, sends the offer, and the callee's accept, decline, or defer is recorded to the Ledger](diagrams/handshake.png)
 
 <sub>Diagram source: [diagrams/handshake.mmd](diagrams/handshake.mmd)</sub>
 
@@ -182,22 +182,22 @@ Any endpoint can dial any other directly. An ad-hoc call is the degenerate workf
 When an agent endpoint's queue saturates (e.g. `review-agent@mohit.acme` at replicas 4/4, depth 31):
 
 1. New offers to it get `defer` (endpoint decision) — the Exchange schedules retries and the ledger shows the defer trail.
-2. The registry manifest reflects `saturated`; callers and the Orchestrator's standing-offer checks see it.
+2. The endpoint's **observed status** reads `saturated` (composed from Queue-service depth); callers and the Orchestrator's standing-offer checks see it.
 3. The owning human intervenes **only if needed**: bump an item's priority, pause the queue, or take an item over ("I'll take this call"), which reassigns delivery to their own inbox. All three are ledger-recorded interventions.
 
 ## 6. Cross-cutting: identity and endpoint model
 
-- **Address = identity.** Flat, org-scoped namespace: `name@org` for humans and team agents, `agent-name@owner.org` for personal agents. Addresses are stable; capability manifests behind them change freely.
-- **Humans and agents are co-equal** endpoint kinds with the same protocol surface. The differences are presentation (inbox vs. pull) and manifest shape (humans implicitly accept `inbox` delivery; agents declare verbs/artifact types/replicas).
-- **Ownership and accountability:** every agent endpoint has a `maintainer` (human or team) in its manifest, and every envelope an agent sends can carry `on_behalf_of` provenance. "Who did this and for whom" is always answerable from ledger + registry alone.
+- **Address = identity.** Flat, org-scoped namespace: `name@org` for humans and team agents, `agent-name@owner.org` for personal agents. Addresses are stable; the endpoint record behind them (transport, description, maintainer) changes freely. Internally the record is keyed by an opaque system-minted `id`, not the address (see [registry-data-model.md](registry-data-model.md)).
+- **Humans and agents are co-equal** endpoint kinds with the same protocol surface. The only difference is presentation (inbox vs. pull); what each accepts is decided at handshake by the endpoint's own logic, invisible to the switchboard.
+- **Ownership and accountability:** every agent endpoint has a `maintainer` — a registry-controlled **IdP principal** (user or group), not self-declared — and every envelope an agent sends can carry `on_behalf_of` provenance. "Who did this and for whom" is always answerable from ledger + registry alone.
 - **Authentication:** each endpoint authenticates to the switchboard with its own credential (per-endpoint token/key issued at registration; mTLS as hardening later). Endpoints never authenticate to each other — the switchboard is the trust broker.
-- **Authorization model is deliberately thin:** directory visibility + handshake right-to-decline, per the settled principles. There are no switchboard-enforced call graphs or approval gates in v0.
+- **Authorization model is deliberately thin:** reachability is coarse **org membership** — any endpoint may dial any other in the same org — plus the handshake right-to-decline. There are no finer switchboard-enforced call graphs or approval gates in v0; cross-org is out of scope (§11), and `org_id` is the only seam for it.
 
 ## 7. Cross-cutting: security posture
 
 | Concern | Position |
 |---|---|
-| Trust boundary | Endpoints are untrusted edges; the switchboard substrate is the trusted core. Everything an endpoint asserts (manifest, acceptance, envelopes) is recorded as *its* assertion, attributable via its credential. |
+| Trust boundary | Endpoints are untrusted edges; the switchboard substrate is the trusted core. Everything an endpoint asserts (its self-description, acceptance, envelopes) is recorded as *its* assertion, attributable via its credential. |
 | Artifact custody | The switchboard carries **references + digests**, not bodies. Bodies live in the org's existing systems of record (GitHub for diffs, doc stores for documents), which the single-org pilot's endpoints already share access to; for freshly generated artifacts the reference deployment designates **one org-shared object-store bucket** — a deployment convention, not a switchboard component — so agents don't each bring their own storage. Artifact stores enforce their own access control; a leaked ledger never leaks artifact content. Digest lets recipients verify what they fetched is what was offered. |
 | Tenancy | v0 is single-org. All addresses live in one org namespace; cross-org federation is deferred (§11) and must not be accidentally half-built. |
 | Auditability | Append-only ledger, complete by construction (no side channels). Ledger writes are part of the delivery path, not best-effort telemetry. Entries are never edited; an org-configurable retention window may expire old entries per policy. The ledger contains **message bodies** (the conversation) but never **artifact bodies** (the work); role-gated queries and the retention window bound that exposure. |
@@ -210,7 +210,7 @@ Correlation is built into the contract: `thread_id` (conversation), `session_id`
 
 - **Metrics (the console's lamps are views over these):** handshake latency and accept/decline/defer rates per endpoint; queue depth, age of oldest item, drain rate; workflow run counts by state; escalation rate per agent; autoscale replica utilization vs. budget cap.
 - **Ledger vs. telemetry:** the ledger is the durable record of *what happened between parties*; metrics/logs/traces are operational exhaust of *how the substrate performed*. The ledger is never sampled; telemetry can be.
-- **Health of the edges:** endpoint status (online/away/saturated) in the registry is self-reported plus liveness-checked (missed handshakes degrade status). Saturation is a first-class observable state, since the human-intervention model depends on noticing it.
+- **Health of the edges:** endpoint status (online/away/saturated) is **observed, not stored on the endpoint** — composed from Queue-service depth plus liveness signals (missed handshakes, heartbeats). Saturation is a first-class observable state, since the human-intervention model depends on noticing it.
 
 ## 9. Non-functional requirements (v0)
 
@@ -234,7 +234,7 @@ Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for d
 
 | Path | Budget |
 |---|---|
-| Registry resolve + manifest read (hot path of every offer) | ≤ 100 ms |
+| Registry resolve (address → transport + reachability; hot path of every offer) | ≤ 100 ms |
 | Handshake transit (offer out + reply in, excluding callee decision time) | ≤ 400 ms |
 | Enqueue: verb emission → visible in callee's queue (ledger write + SQS send) | ≤ 1 s |
 | Handshake timeout (silence = implicit decline) | 60 s default, per-offer configurable |
@@ -315,3 +315,4 @@ Ratified in the stakeholder walkthrough on **2026-07-12**, with amendments from 
 | 9 | NFR parameters | **Ratified 2026-07-15** — latency budgets relaxed to 100 ms / 400 ms / 1 s / 4 s p95; handshake timeout 60 s; durability RPO ≤ 5 min, RTO ≤ 4 h, auto-re-drive past SQS's 14-day cap; workflow wait caps are **per-state, author-declared, defaulting to 24 h** (initially a hard 24 h cap; softened same day to the configurable default so days-long workflows declare their needs up front — reconciles with the brief's "can wait days"); ledger retention 1 year default; availability 99.5% monthly, no cross-region DR; **cost ceiling $50/month** (four services co-locate on shared compute in the pilot). Amended 2026-07-16 in PR #2 review: fairness via **per-endpoint session limits** (default 25) and **per-workflow-definition run limits** (default 10), replacing the briefly proposed 20%-of-global guardrail. |
 | 10 | Envelope schema specifics | **Ratified 2026-07-15** — IDs are switchboard-minted prefixed **UUIDv4s** (ordering via `created_at`); priority **0–9, lower = urgent, default 4, 0 reserved for human take-over**; **16 KB** envelope cap; **strict fields** (unknown fields rejected, no extension bag); **set-once immutability** (corrections are new envelopes); **sha256-only** digests. See [envelope-schema.md](envelope-schema.md). |
 | 11 | Message body vs artifact body | **Ratified 2026-07-16 (PR #2 review)** — envelopes gain an optional inline **`body` ≤ 12 KB** for conversational text (including chat-style exchanges), delivered via queues and stored in the ledger as part of the record. Artifact bodies remain by-reference only. Rationale: the conversation is exactly what the ledger must capture — forcing prose into artifact stores (or Slack) would recreate side channels. Sub-artifact references from bodies use **URI fragments** on the canonical artifact ref (`#L40-L60`); per-type conventions land in the v0 spec; interpretation is client-side only. |
+| 12 | Registry model & no manifest | **Changed 2026-08-03** — the Registry stores **one endpoint record** (opaque `id`; `address`; `org_id`; `kind`; `display_name`/`description`; an IdP-principal `maintainer`; typed `transport`; lifecycle with reversible suspension) and **no capability manifest**. The switchboard no longer stores or matches accepted verbs/artifact types — acceptance is entirely edge-side at handshake, reinforcing "intelligence at the edges"; `artifact.type` is offer metadata the callee decides on, not a switchboard gate. Status and queue depth are **observed** (composed from the Queue service), not published fields; `maintainer` moves from manifest content to a registry-controlled field (self-declared accountability is worthless). Reachability is coarse **org membership**. Consequence flagged for the **Exchange** story: the handshake no longer performs manifest matching. See [registry-data-model.md](registry-data-model.md). |

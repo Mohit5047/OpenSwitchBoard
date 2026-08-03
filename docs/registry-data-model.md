@@ -47,14 +47,14 @@ An endpoint is one row. There is no separate manifest, no capability projection,
 
 7. **Live status is not stored.** Online/away/saturated and queue depth are the Queue service's facts (queues are switchboard-owned; the Registry never calls endpoints). The console composes them at read time.
 
-## Divergence from the ratified architecture
+## Reconciled with the architecture
 
-This model departs from `architecture.md` (ratified) in two places, deliberately and by decision — flagged, not smuggled:
+This model changed two things the earlier ratified `architecture.md` asserted; the architecture doc has been updated to match (decision-log entry 12, 2026-08-03):
 
-- The architecture has every endpoint **publish a capability manifest** (§3.2, §4); this model has **no manifest** (reason 4 above).
-- The architecture lists **maintainer as manifest content** (§3.2); here it is a registry-controlled column (reason 2).
+- The manifest is gone — the switchboard no longer stores or matches accepted verbs/artifact types; acceptance is edge-side at handshake, and `artifact.type` is metadata the callee decides on.
+- Maintainer moved from manifest content to a registry-controlled field.
 
-Reconciling this — updating `architecture.md`, or ratifying the departure — is a stakeholder decision, not one this doc makes on its own.
+One consequence lands on a sibling story: the **Exchange** handshake no longer performs manifest matching — flagged in the architecture decision log for the Exchange design to pick up.
 
 ## Deliberately not here
 

@@ -10,7 +10,7 @@ flowchart LR
             X["Exchange<br/>offer/accept handshake,<br/>ad-hoc & first-contact delivery"]
         end
         subgraph RS["Registry service"]
-            R["Registry<br/>endpoints & capability manifests"]
+            R["Registry<br/>endpoint records<br/>(identity &amp; transport)"]
         end
         subgraph QS["Queue service"]
             Q["Queues<br/>durable, per-endpoint (AWS SQS)<br/>every write ledger-recorded"]
@@ -24,7 +24,7 @@ flowchart LR
     C["Console<br/>client of the public APIs<br/>of all four services"]
 
     A2 -- "dial /<br/>emit envelope" --> X
-    X -- "resolve address,<br/>read manifest" --> R
+    X -- "resolve address<br/>(transport, org)" --> R
     X -- "enqueue accepted<br/>deliveries" --> Q
     X -- "verb events" --> O
     O -- "direct enqueue via<br/>standing offers" --> Q
