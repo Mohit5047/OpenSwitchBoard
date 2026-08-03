@@ -7,8 +7,8 @@ sequenceDiagram
     participant L as Ledger
 
     Caller->>X: dial(to, verb, artifact.type)
-    X->>R: resolve(to) + manifest
-    R-->>X: manifest (verbs, artifact types, status)
+    X->>R: resolve(to)
+    R-->>X: transport + org (reachability)
     X->>Callee: OFFER {caller, verb, artifact.type}
     alt accept
         Callee-->>X: accept
