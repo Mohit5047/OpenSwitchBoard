@@ -61,4 +61,4 @@ One consequence lands on a sibling story: the **Exchange** handshake no longer p
 - **Credentials / auth material** — a separate concern, designed with the handshake, not the identity row.
 - **Teams as a table** — group membership belongs to the IdP; `maintainer` references it.
 - **Cross-org federation** — north-star only; `org_id` is the seam and nothing more.
-- **API shape (REST/GraphQL), console UX** — later, and consumer-first.
+- **Console UX** — later, and consumer-first. (API shape is settled: [registry-api.md](registry-api.md).)
