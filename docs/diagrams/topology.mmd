@@ -7,8 +7,9 @@ flowchart LR
 
     subgraph SB["Switchboard (neutral common carrier)"]
         subgraph XS["Exchange service"]
-            X["Exchange<br/>offer/accept handshake,<br/>ad-hoc & first-contact delivery"]
+            X["Exchange<br/>offer/accept handshake,<br/>ad-hoc &amp; first-contact delivery"]
         end
+        N["Connector<br/>executes transport, both directions<br/>called by Exchange and Queues<br/>(co-located — no own deployable)"]
         subgraph RS["Registry service"]
             R["Registry<br/>endpoint records<br/>(identity &amp; transport)"]
         end
@@ -17,7 +18,7 @@ flowchart LR
         end
         subgraph CP["Control-plane service"]
             O["Orchestrator — /workflows<br/>(Temporal)"]
-            L["Ledger — /ledger<br/>append-only, org-set retention<br/>records every handshake,<br/>enqueue & workflow run"]
+            L["Ledger — /ledger<br/>append-only, org-set retention<br/>records every handshake,<br/>enqueue &amp; workflow run"]
         end
     end
 
@@ -28,7 +29,11 @@ flowchart LR
     X -- "enqueue accepted<br/>deliveries" --> Q
     X -- "verb events" --> O
     O -- "direct enqueue via<br/>standing offers" --> Q
-    Q -- "pull (agents) /<br/>inbox (humans)" --> A1
-    Q --> H
+    X -- "dial offers" --> N
+    Q -- "dial delivery<br/>(push profiles)" --> N
+    N -- "a2a / native / webhook" --> A1
+    N -- "chat / email / push" --> H
+    Q -- "pull profiles drain<br/>their own queue" --> A1
+    N -- "ingress: channel reply<br/>→ envelope" --> X
     A1 -- "verb emissions" --> X
     C --- SB
