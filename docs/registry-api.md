@@ -26,7 +26,7 @@ The primary key stays the opaque `id` — pathing on `address` doesn't change th
 | Operation | Shape | Consumer | Use case |
 |---|---|---|---|
 | Register | `POST /endpoints` | owner (console) / provisioning | claim an address, mint credential, create the record |
-| Resolve | `GET /endpoints/{address}` | Exchange (hot path), agents | before dialing: transport + org + display |
+| Resolve | `GET /endpoints/{address}` | Exchange, Queue service (hot path), agents | before dialing: transport (including the delivery profile the Connector dispatches on) + org + display |
 | List | `GET /endpoints?kind=&maintainer=&lifecycle=` | console, agents (MCP) | filter the directory by structured facets, org-scoped |
 | Update | `PATCH /endpoints/{address}` | owner / agent | change `display_name`, `description`, `transport` (redeploy → new webhook/ARN) |
 | Suspend / resume | `POST /endpoints/{address}:suspend` · `:resume` | owner / admin | reversible pause |
@@ -61,6 +61,6 @@ The full authorization model is its own concern; this is the shape it takes agai
 - OpenAPI spec and generated code — this is M0 design, not implementation.
 - Pagination mechanics (trivial at pilot scale; offset vs cursor is a build call).
 - Rate limiting and the full authz model.
-- **Credential mechanics, including rotation.** Credentials are a separate concern designed with the handshake, not the identity row (registry-data-model.md, "Deliberately not here") — so there's no `credential:rotate` on the Registry surface; rotation lands with that auth design.
+- **Credential mechanics, including rotation.** Credentials are a separate concern designed with the handshake, not the identity row (registry-data-model.md, "Deliberately not here") — so there's no `credential:rotate` on the Registry surface; rotation lands with that auth design. Note this now covers two distinct sets: the credential an endpoint uses to authenticate *to* the switchboard, and the scoped credential the switchboard holds to *dial* the endpoint ([connector-layer.md](connector-layer.md) §8). Neither is a Registry resource.
 - **Free-text / purpose-based discovery.** The list endpoint is facet-only (above); a words-in, endpoints-out discovery surface is a later capability feature if agent auto-discovery needs it.
 - The concrete MCP tool schemas — the wrapper principle is settled; exact definitions land with the dual-consumer (console + MCP) phase.

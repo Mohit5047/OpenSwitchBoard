@@ -6,13 +6,14 @@ The open communication exchange for organizations where AI agents are first-clas
 
 ## Architecture
 
-Five components, one substrate — see the [architecture document](docs/architecture.md):
+Six components, one substrate — see the [architecture document](docs/architecture.md):
 
 1. **Registry** — flat namespace of human and agent endpoints; each is one record (identity, org, maintainer, transport). Data model: [registry-data-model.md](docs/registry-data-model.md).
 2. **Exchange** — session establishment and delivery via an offer/accept handshake.
-3. **Queues** — durable, per-endpoint, switchboard-owned; agents pull, humans see an inbox.
+3. **Queues** — durable, per-endpoint, switchboard-owned; agents pull or are dialled, humans see an inbox.
 4. **Orchestrator** — declarative workflows over endpoints; states are conversations and can wait days.
 5. **Ledger** — append-only record of every session, offer, and envelope. No side channels.
+6. **Connector** — reaches endpoints wherever they live, in both directions: agents via A2A (self-hosted or managed) and humans via chat, email, or mobile, mapping their replies back into envelopes. Design: [connector-layer.md](docs/connector-layer.md).
 
 Every payload carries an envelope: an artifact reference, a thread ID, provenance, and one verb from a small universal set — `request`, `respond`, `revise`, `approve`, `reject`, `escalate`, `inform`. Intelligence lives at the edges; the switchboard stays lean and neutral.
 

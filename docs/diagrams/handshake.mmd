@@ -2,23 +2,30 @@ sequenceDiagram
     participant Caller as caller (endpoint or orchestrator)
     participant X as Exchange
     participant R as Registry
+    participant N as Connector
     participant Callee as callee endpoint
     participant Q as Callee's queue
     participant L as Ledger
 
     Caller->>X: dial(to, verb, artifact.type)
     X->>R: resolve(to)
-    R-->>X: transport + org (reachability)
-    X->>Callee: OFFER {caller, verb, artifact.type}
+    R-->>X: transport (profile + locator) + org
+    X->>N: dial offer
+    N->>Callee: OFFER {caller, verb, artifact.type}
     alt accept
-        Callee-->>X: accept
+        Callee-->>N: accept
+        N-->>X: accepted
         X->>Q: enqueue envelope
         X->>L: record offer=accepted, session open
     else decline (or timeout = implicit decline)
-        Callee-->>X: decline / (silence)
+        Callee-->>N: decline / (silence)
+        N-->>X: declined
         X->>L: record offer=declined
         X-->>Caller: declined
-    else defer
-        Callee-->>X: defer (retry-after)
+    else defer (endpoint or its host signals backpressure)
+        Callee-->>N: defer (retry-after) / HTTP 429
+        N-->>X: deferred (retry-after)
         X->>L: record offer=deferred, retry scheduled
     end
+
+    note over X,Callee: Endpoints with no acceptance webhook get a<br/>console-configured default the Exchange evaluates<br/>on their behalf — the only way humans are reachable.

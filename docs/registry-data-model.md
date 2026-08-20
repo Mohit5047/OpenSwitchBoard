@@ -25,7 +25,7 @@ An endpoint is one row. There is no separate manifest, no capability projection,
 | `maintainer_type` | text | `user` or `group`. Registry-controlled. |
 | `maintainer_ref` | text | IdP subject (OIDC `sub`) or group id — opaque, stable. |
 | `maintainer_issuer` | text | The IdP that asserts the maintainer. |
-| `transport` | json | `{ provider, locator, config }` — where the endpoint lives and how to reach it (ARN, webhook URL, Slack id). |
+| `transport` | json | `{ provider, locator, config }` — where the endpoint lives and how to reach it. `provider` is the **delivery profile** the Connector dispatches on (`a2a`, `native`, `webhook`, `pull`, `console`, `chat`/`email`/`push`); `locator` is the profile-shaped address (A2A base URL, ARN, webhook URL, Slack member id). |
 | `lifecycle` | text | `active` \| `suspended` \| `deregistered`. |
 | `registered_at` | timestamptz | |
 | `suspended_at` | timestamptz | Null unless suspended. Set on suspend, cleared on resume. |
@@ -37,7 +37,9 @@ An endpoint is one row. There is no separate manifest, no capability projection,
 
 2. **Maintainer is an IdP principal, registry-controlled.** `{type, ref, issuer}` points at the org's identity provider — OIDC `sub` for a person, group id for a team — the one identity representation every org already has, stable across email or name changes. The human-readable owner (`varsha@acme.com`) is resolved from the IdP for display, never stored as truth. It is **not** endpoint-published: a self-declared maintainer would make accountability meaningless.
 
-3. **Transport is a typed locator, separate from the address.** The address is the stable identity; the transport is where the thing physically lives and how the switchboard reaches it — provider-shaped and mutable (Bedrock AgentCore ARN, HTTPS webhook, Lambda, Slack id). The DNS name-vs-record split. One JSON field now; it becomes a `binding` child table only if an endpoint needs several.
+3. **Transport is a typed locator, separate from the address.** The address is the stable identity; the transport is where the thing physically lives and how the switchboard reaches it — provider-shaped and mutable (an A2A base URL, a Bedrock AgentCore ARN, an HTTPS webhook, a Slack id). The DNS name-vs-record split. One JSON field now; it becomes a `binding` child table only if an endpoint needs several.
+
+   `provider` names one of the Connector's delivery profiles ([connector-layer.md](connector-layer.md) §3), so the row is what makes an endpoint reachable rather than merely nameable. Two consequences worth stating here: **hosting and reach are orthogonal** — a self-hosted A2A agent and a Bedrock AgentCore agent both carry `provider: a2a`, and this column cannot tell you where either runs — and `pull` marks endpoints that can't accept inbound at all (NAT, air-gapped), never "self-hosted".
 
 4. **No manifest.** The switchboard doesn't enforce which verbs or file types an endpoint accepts — that's the endpoint's call at handshake (intelligence at the edges). A human chooses an endpoint by `description`; a machine reaches it by `transport`. Nothing was left for a manifest to hold. Trade-off: no structured "list every endpoint that takes diffs" — acceptable at pilot scale (search plus decline-at-handshake), and it returns as a real capability feature if agent-to-agent auto-discovery ever needs it.
 
@@ -56,9 +58,11 @@ This model changed two things the earlier ratified `architecture.md` asserted; t
 
 One consequence lands on a sibling story: the **Exchange** handshake no longer performs manifest matching — flagged in the architecture decision log for the Exchange design to pick up.
 
+A later change (decision-log entries 13–17, 2026-08-09) gave this table a consumer it previously lacked: the **Connector** ([connector-layer.md](connector-layer.md)) is the component that executes `transport`, dispatching on `provider`. Nothing in the model changes beyond naming the profile set — the row was already the right shape, it just had nobody to read it. Credentials still live outside this table (below); the Connector's custody rules govern them.
+
 ## Deliberately not here
 
-- **Credentials / auth material** — a separate concern, designed with the handshake, not the identity row.
+- **Credentials / auth material** — a separate concern, designed with the handshake, not the identity row. The custody rules for the credentials the switchboard needs in order to *dial* an endpoint are set in [connector-layer.md](connector-layer.md) §8; neither the secrets nor their references belong in this table.
 - **Teams as a table** — group membership belongs to the IdP; `maintainer` references it.
 - **Cross-org federation** — north-star only; `org_id` is the seam and nothing more.
 - **Console UX** — later, and consumer-first. (API shape is settled: [registry-api.md](registry-api.md).)
