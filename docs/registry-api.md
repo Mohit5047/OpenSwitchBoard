@@ -26,7 +26,7 @@ The primary key stays the opaque `id` — pathing on `address` doesn't change th
 | Operation | Shape | Consumer | Use case |
 |---|---|---|---|
 | Register | `POST /endpoints` | owner (console) / provisioning | claim an address, mint credential, create the record |
-| Resolve | `GET /endpoints/{address}` | Exchange and Connector (hot path), agents | before dialing: transport (including the delivery profile the Connector dispatches on) + org + display |
+| Resolve | `GET /endpoints/{address}` | Exchange, Queue service (hot path), agents | before dialing: transport (including the delivery profile the Connector dispatches on) + org + display |
 | List | `GET /endpoints?kind=&maintainer=&lifecycle=` | console, agents (MCP) | filter the directory by structured facets, org-scoped |
 | Update | `PATCH /endpoints/{address}` | owner / agent | change `display_name`, `description`, `transport` (redeploy → new webhook/ARN) |
 | Suspend / resume | `POST /endpoints/{address}:suspend` · `:resume` | owner / admin | reversible pause |

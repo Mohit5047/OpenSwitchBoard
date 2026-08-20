@@ -213,7 +213,7 @@ The escalation in §5.2 ends at a human's queue. Getting it to the person, and t
 Points to notice:
 
 - The human never installs anything. Their endpoint is a **configuration** — a channel and a hosted acceptance policy — not a deployment. This is what keeps the directory dense enough to be worth browsing.
-- **Ingress is not a back door.** The reply re-enters through the Exchange's ordinary public API as a call from `varsha@acme`, gets a switchboard-minted envelope, and lands in the ledger like any other. No side channels (§2.1) survives contact with Slack.
+- **Ingress is not a back door.** The reply re-enters through the Exchange's ordinary public API as a call from `varsha@acme`, gets a switchboard-minted envelope, and lands in the ledger like any other. The *no side channels* principle (§2.1) survives contact with Slack.
 - The verb set never stretched: a button became `approve`, and a prose reply would have become `respond` carrying the inline `body`.
 - Both hops out of a queue went through the same Connector — one to a `chat` profile, one to an `a2a` profile. The switchboard treats a person and a hosted agent as the same kind of thing, which is the claim the whole product rests on.
 
@@ -273,7 +273,7 @@ Human-in-the-loop turnarounds are minutes-to-days, so the system optimizes for d
 | Handshake transit (offer out + reply in, excluding callee decision time) | ≤ 400 ms |
 | Enqueue: verb emission → visible in callee's queue (ledger write + SQS send) | ≤ 1 s |
 | Connector egress: switchboard-side overhead of one dial, excluding the backend's own processing | ≤ 500 ms |
-| Handshake timeout (silence = implicit decline) | 60 s default, per-offer configurable; **human profiles take a longer default or bypass the handshake** (§3.3) |
+| Handshake timeout (silence = implicit decline) | 60 s default, per-offer configurable; **human profiles take a longer default or bypass the handshake** (§11 open question #10; [connector-layer.md](connector-layer.md) §10) |
 | Console / ledger queries (endpoint- or workflow-scoped) | ≤ 4 s |
 
 ### 9.3 Durability
@@ -327,7 +327,7 @@ Explicitly **not** blocking M0 close; owners should land these in the v0 spec or
 7. **Ledger retention defaults** — the retention window is org-configurable (§3.6); the v0 spec should propose a sane default and floor.
 8. **Per-channel ingress fidelity** — how faithfully a Slack thread, an email reply chain, and a mobile action each map onto one `thread_id`, and what happens to a reply that arrives on a closed thread. Owned by the Connector story; the verb mapping (§3.7) is settled, the per-channel conventions aren't.
 9. **Human presence sources** — which of working hours, calendar OOO, console session, and channel presence the pilot actually wires up (§8), and which are deferred.
-10. **Human handshake semantics** — longer timeout vs. bypassing the handshake for human profiles (§9.2). Both work; the v0 spec picks one.
+10. **Human handshake semantics** — longer timeout vs. bypassing the handshake for human profiles (§9.2). Both work; the v0 spec picks one. Note the hosted default (decision #16) already narrows this: it is evaluated **instantly**, so "longer timeout" can't mean the synchronous Exchange→Connector `dial()` blocks for hours — for hosted-policy humans the default *is* the handshake answer. The live choice is instant hosted evaluation vs. bypass for endpoints that supply their own async policy.
 
 ## 12. How this feeds the v0 spec
 

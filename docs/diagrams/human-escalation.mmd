@@ -1,25 +1,26 @@
 sequenceDiagram
     participant A as review-agent@varsha.acme
     participant X as Exchange
-    participant Q as varsha@acme's queue
+    participant QH as varsha@acme's queue
+    participant QA as review-agent@varsha.acme's queue
     participant N as Connector
     participant S as Slack
     participant H as Varsha (human)
     participant L as Ledger
 
     A->>X: escalate (thr_a2e8…, body: "needs judgment on rollback")
-    X->>Q: enqueue envelope
+    X->>QH: enqueue envelope
     X->>L: record enqueue
-    Q->>N: dial delivery (profile: chat)
+    QH->>N: dial delivery (profile: chat)
     N->>S: post notification + Approve / Reject / Open
     S->>H: notify
 
     H->>S: taps Approve
     S->>N: interaction event
     N->>X: ingress → approve on thr_a2e8…
-    X->>Q: enqueue to review-agent@varsha.acme
+    X->>QA: enqueue to review-agent@varsha.acme
     X->>L: record envelope
-    Q->>N: dial delivery (profile: a2a)
+    QA->>N: dial delivery (profile: a2a)
     N->>A: approve
 
     note over N,S: Structured actions map to approve/reject.<br/>Free-text replies map to respond carrying the<br/>inline body (≤ 12 KB). The verb set stays closed.

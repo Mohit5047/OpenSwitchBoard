@@ -61,10 +61,10 @@ Every profile carries the same envelope, the same verbs, and the same ledger tre
 One shape across every profile:
 
 ```
-dial(endpoint, payload) -> accepted | deferred(retry_after) | failed(reason)
+dial(transport, payload) -> accepted | deferred(retry_after) | failed(reason)
 ```
 
-`payload` is either offer metadata (from the Exchange) or an envelope (from the Queue service). The Connector resolves the endpoint's profile, applies the profile's auth, executes, and normalizes the result into those three outcomes.
+`transport` is the endpoint's **already-resolved** transport record — the caller (Exchange for offers, Queue service for deliveries) does the single Registry `resolve` and hands the record in; the Connector never calls the Registry itself (one resolve per offer, §9.2). `payload` is either offer metadata (from the Exchange) or an envelope (from the Queue service). The Connector reads the delivery profile from the transport record, applies the profile's auth, executes, and normalizes the result into those three outcomes.
 
 **Guarantees are profile-dependent, and the Connector reports which apply** rather than pretending uniformity:
 
@@ -102,7 +102,9 @@ Failures that are not backpressure surface as `failed` and do not silently retry
 
 ## 7. Idempotency
 
-Both egress callers can re-drive: the Queue service's sweeper re-sends unmarked outbox rows (§3.4), and the Exchange retries deferred offers. Delivery is at-least-once, so the Connector passes `envelope_id` as the idempotency key wherever the profile supports one, and endpoints dedupe on it — the same contract §3.4 already sets for queue consumers. Nothing here weakens the ledger-write-before-send ordering that makes the record complete by construction.
+**Egress.** Both egress callers can re-drive: the Queue service's sweeper re-sends unmarked outbox rows (§3.4), and the Exchange retries deferred offers. Delivery is at-least-once, so the Connector passes `envelope_id` as the idempotency key wherever the profile supports one, and endpoints dedupe on it — the same contract §3.4 already sets for queue consumers. Nothing here weakens the ledger-write-before-send ordering that makes the record complete by construction.
+
+**Ingress is different — there is no `envelope_id` yet.** An inbound channel event mints a *new* envelope (§5), so it can't dedupe on one. Channel platforms re-deliver: Slack retries an unacknowledged interaction or event, and a naïve mint would turn one Approve tap into two ledger records and two envelopes on the thread. The Connector therefore dedupes on the **channel-native event id** (Slack `event_id` / interaction token, the provider's message id) **before minting** — one channel event maps to at most one minted envelope, and a retry resolves to the already-minted one rather than a second. This runs ahead of the ledger write, so ledger-write-before-send still holds and the record stays complete by construction.
 
 ## 8. Credential custody
 
@@ -132,7 +134,7 @@ Any endpoint that wants real logic registers its own webhook and nothing changes
 
 ## 10. Human handshake and presence
 
-- **Timeout.** The 60 s default is agent-shaped. Human profiles take a longer default, or bypass the handshake entirely on the grounds that an inbox is unbounded and a human declines by acting rather than by handshaking. Settled in the v0 spec.
+- **Timeout.** The 60 s default is agent-shaped. Human profiles take a longer default, or bypass the handshake entirely on the grounds that an inbox is unbounded and a human declines by acting rather than by handshaking. Settled in the v0 spec — but note it can't mean the Exchange→Connector `dial()` blocks for hours: a **hosted default policy (§9) is evaluated instantly**, so for hosted-policy humans the default *is* the handshake answer, returned at once. The genuinely open branch (architecture §11 #10) is therefore instant hosted evaluation vs. bypassing the handshake for endpoints that supply their own async policy — not a multi-hour synchronous block.
 - **Presence.** §8 composes status from queue depth and liveness, which is agent-shaped. Human presence composes from working hours, calendar out-of-office, an open console session, and channel presence. "Saturated" for a person means 37 unread and no inbox opened in two days — and should feed the hosted auto-defer above.
 
 ## 11. The self-hosting standard is A2A
@@ -172,6 +174,7 @@ The dependency boundary is the point: LiteLLM is the agent-egress engine *inside
 ## 13. Does not
 
 - **Choose recipients.** No routing, no capability matching, no preference resolution. The caller picked the callee from the directory.
+- **Resolve addresses.** Its caller passes the already-resolved transport record (§4); the Connector never calls the Registry. Resolve stays a caller concern, one per offer (§9.2).
 - **Evaluate artifact content.** It carries references and digests like everything else.
 - **Own the record.** It emits; the Exchange records handshakes and the queue-write chokepoint records deliveries (§3.4). Ledger completeness still lives there.
 - **Bypass the queue.** Push-profile delivery drains a queue; it does not replace one.
